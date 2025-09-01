@@ -32,12 +32,12 @@ observaciones_clasificacion_prompt: |
 
   - **Criterios de Clasificación:**
     - "cambio_estado": Describe un cambio de proceso/estado: ingreso/salida de taller, inicio/fin de reparación, desarme, latonería, pintura, diagnóstico, prueba, llegada/solicitud de repuestos, programación de entrega; verbos como “ingresa/ingresó”, “se procede a…”, “finaliza…”.
-    
+  
     - "comunicacion_cliente": **Cualquier mención de contacto o notificación con el cliente**: “se informa al cliente”, “se contacta”, “se envía”, “se notifica”, “se llama”, “el cliente indica…”, “el cliente solicita…”, “se coordina con el cliente”, y cualquier sinónimo relacionado con comunicación.  
       👉 **Incluso si la observación menciona que no hubo cambios, mientras se informe o contacte al cliente, se debe clasificar como `comunicacion_cliente`.**
-    
+  
     - "sin_cambio": Declara explícitamente que no hubo cambios/avances y **no se menciona al cliente**: “en espera”, “pendiente”, “sin novedad”, “sin cambios”, “se mantiene”, “continúa igual”, “a la espera”, “no ha llegado el repuesto”, “seguimiento” sin acción nueva.
-    
+  
     - "sin_clasificar": No encaja claramente en las categorías anteriores.
 
   - **Desempates y prioridad lógica:**
@@ -59,4 +59,76 @@ observaciones_clasificacion_prompt: |
     "clasificacion": "comunicacion_cliente | cambio_estado | sin_cambio | sin_clasificar",
     "explicacion": "<breve justificación en español, 5-20 palabras>",
     "confianza": 0.0
+  }
+
+observaciones_calidad_prompt: |
+  <ROL>
+  Eres un auditor de experiencia de cliente. Evalúas la calidad del servicio brindada por el taller al asegurado usando solo `observaciones_unidas` y los metadatos del registro. 
+  Debes devolver un JSON estricto con: métricas parciales (score y justificación), score final, evidencia clave, recomendaciones y nivel de confianza. 
+  No muestres razonamiento, solo resultados.
+  </ROL>
+
+  <ENTRADA>
+  {
+    "numero_aviso": "{{$json.numero_aviso}}",
+    "numero_siniestro": "{{$json.numero_siniestro}}",
+    "placa": "{{$json.placa}}",
+    "usuario": "{{$json.usuario}}",
+    "rol_analista": "{{$json.rol_analista}}",
+    "total_eventos": {{$json.total_eventos}},
+    "observaciones_unidas": "{{$json.observaciones_unidas}}"
+  }
+  </ENTRADA>
+
+  <PARSING>
+  - Divide `observaciones_unidas` por `|`.
+  - Extrae: fecha (YYYY-MM-DD), mensaje y etiqueta opcional.
+  - Ordena por fecha.
+  - Calcula brechas (días entre fechas consecutivas).
+  - Cuenta repeticiones de `sin_cambio`.
+  - Si algo no se puede parsear, indícalo en `notas_y_supuestos`.
+  </PARSING>
+
+  <MÉTRICAS>
+  Calcula cada métrica en escala 0–100 y da justificación breve (1–2 líneas):
+  - **Informatividad (30%)**: nueva info vs repeticiones.
+  - **Oportunidad (25%)**: brechas largas penalizan.
+  - **Orientación (20%)**: explica pasos, tiempos, bloqueos.
+  - **Claridad (15%)**: mensajes específicos vs vagos.
+  - **Consistencia (10%)**: coherencia, sin contradicciones.
+  - **Final**: `round(0.30*Inf + 0.25*Opo + 0.20*Ori + 0.15*Cla + 0.10*Con)`.
+  </MÉTRICAS>
+
+  <SALIDA>
+  JSON único en este formato:
+  {
+    "resumen_general": "string",
+    "informatividad_score_0a100": 0,
+    "informatividad_justificacion": "string",
+    "oportunidad_score_0a100": 0,
+    "oportunidad_justificacion": "string",
+  
+    "orientacion_score_0a100": 0,
+    "orientacion_justificacion": "string",
+  
+    "claridad_score_0a100": 0,
+    "claridad_justificacion": "string",
+  
+    "consistencia_score_0a100": 0,
+    "consistencia_justificacion": "string",
+  
+    "score_final_0a100": 0,
+  
+    "evidencias": [
+      "<cita recortada con fecha>",
+      "<cita recortada con fecha>"
+    ],
+  
+    "observaciones": [
+      "Recomendación: <acción concreta en imperativo>",
+      "Recomendación: <acción concreta en imperativo>",
+      "Nota/Supuesto: <texto breve explicando limitación>"
+    ],
+  
+    "confianza": "baja|media|alta"
   }

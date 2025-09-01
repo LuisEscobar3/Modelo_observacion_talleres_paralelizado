@@ -50,6 +50,11 @@ def main():
     print(f"📂 JSON generado en: {salida_json}")
 
 
+
+    df = cargar_json_a_polars(salida_json)
+    df_casos = unir_observaciones_por_caso(df, separador=" | ")  # o "\n"
+    print(df_casos.head(10))
+
 if __name__ == "__main__":
     print("xddd")
     main()
