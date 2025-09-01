@@ -1,6 +1,7 @@
 import polars as pl
 from typing import Optional
 
+
 def read_csv_with_polars(file_path: str) -> Optional[pl.DataFrame]:
     """
     Lee un archivo CSV de forma eficiente usando la API "lazy" de Polars.
@@ -20,10 +21,10 @@ def read_csv_with_polars(file_path: str) -> Optional[pl.DataFrame]:
     try:
         df = pl.scan_csv(file_path).collect()
         return df
-    except FileNotFoundError:
-        # En una librería real, podríamos loguear el error o relanzar la excepción.
-        # Devolver None es una opción simple para el manejo por parte del llamador.
+    except FileNotFoundError as e:
+        print(f"Archivo no encontrado: {e}")
         return None
-    except Exception:
-        # Captura otros posibles errores de Polars durante la lectura/parseo.
+    except Exception as e:
+        # Captura otros posibles errores de Polars durante la lectura/parseo
+        print(f"Ocurrió un error al leer/parsing con Polars: {e}")
         return None

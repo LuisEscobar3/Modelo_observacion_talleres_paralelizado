@@ -48,7 +48,6 @@ observaciones_clasificacion_prompt: |
   </REGLAS_Y_RESTRICCIONES>
 
   <FORMATO_DE_SALIDA>
-  ```json
   {
     "numero_aviso": "={{$json['NUMERO AVISO']}}",
     "numero_siniestro": "={{$json['NUMERO SINIESTRO']}}",

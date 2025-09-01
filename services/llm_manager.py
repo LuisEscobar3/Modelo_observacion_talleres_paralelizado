@@ -1,7 +1,7 @@
 import os
 import logging
 from ia_transversal_langchain_python_lib.llm.llm_middleware import LlmMiddleware
-from app.services.miscelaneous import load_llm_parameters
+from services.miscelaneous import load_llm_parameters
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
