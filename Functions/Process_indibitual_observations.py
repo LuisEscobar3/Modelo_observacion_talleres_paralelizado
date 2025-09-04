@@ -87,12 +87,22 @@ def _parse_llm_json(raw: str) -> Optional[Dict[str, Any]]:
 # -------------------------------------------------------------------
 
 def _worker_un_registro(
-        df: pl.DataFrame,
-        idx: int,
-        cliente_llm: Any,
-        max_retries: int = 2,  # nº de reintentos adicionales (total = 1 + max_retries)
-        backoff_sec: float = 2.0,  # espera base entre intentos (exponencial)
+    df: pl.DataFrame,
+    idx: int,
+    cliente_llm: Any,
+    max_retries: int = 2,      # nº de reintentos adicionales (total = 1 + max_retries)
+    backoff_sec: float = 2.0,  # espera base entre intentos (exponencial)
 ) -> Dict[str, Any]:
+    """
+    Procesa 1 observación con el LLM y devuelve SIEMPRE:
+    {
+      numero_aviso, numero_siniestro, placa, fecha_observacion,
+      usuario, rol_analista, observacion,
+      clasificacion, explicacion, confianza
+    }
+    Imprime el JSON final resultante por registro.
+    (El RAW del LLM se imprime SOLO si hay error en el intento.)
+    """
     try:
         payload = build_json_para_n8n_registro(df, idx)
         registro = payload.get("registro")
@@ -104,7 +114,7 @@ def _worker_un_registro(
                 "observacion": None, "clasificacion": "sin_clasificar",
                 "explicacion": "registro vacío", "confianza": 0.0, "idx": idx
             }
-            print(f"🧾 Final [{idx + 1}]: {json.dumps(base_out, ensure_ascii=False)}")
+            print(f"🧾 Final [{idx+1}]: {json.dumps(base_out, ensure_ascii=False)}")
             return base_out
 
         # --- Campos base SIEMPRE presentes (limpios) ---
@@ -126,13 +136,13 @@ def _worker_un_registro(
                 "explicacion": "prompt no encontrado",
                 "confianza": 0.0
             })
-            print(f"✅ Procesado registro {idx + 1}")
-            print(f"🧾 Final [{idx + 1}]: {json.dumps(base_out, ensure_ascii=False)}")
+            print(f"✅ Procesado registro {idx+1}")
+            print(f"🧾 Final [{idx+1}]: {json.dumps(base_out, ensure_ascii=False)}")
             return base_out
 
         ALLOWED = {"comunicacion_cliente", "cambio_estado", "sin_cambio", "sin_clasificar"}
 
-        # --- Llamada al LLM con reintentos ante JSON inválido ---
+        # --- Llamada al LLM con reintentos; RAW SOLO en error ---
         intento = 0
         clasificacion = "sin_clasificar"
         explicacion = "no se pudo parsear salida LLM"
@@ -141,25 +151,25 @@ def _worker_un_registro(
 
         while intento <= max_retries:
             intento += 1
+            raw_content = None
             try:
                 messages_for_llm = [
                     SystemMessage(content=system_prompt),
                     HumanMessage(content=f"Observación: {base_out['observacion']}")
                 ]
-                print(f"🚀 LLM idx {idx + 1} intento {intento}/{max_retries + 1}")
+                print(f"🚀 LLM idx {idx+1} intento {intento}/{max_retries+1}")
                 response_obj = cliente_llm.invoke(messages_for_llm)
                 raw_content = response_obj.content if hasattr(response_obj, "content") else str(response_obj)
 
-                # Imprime SIEMPRE el RAW devuelto por el LLM
-                print(f"📥 LLM RAW [{idx + 1}, intento {intento}]: {raw_content}")
-
+                # Parseo robusto
                 llm_json = _parse_llm_json(raw_content)
-
-                # Validación & normalización
                 if llm_json is None:
                     last_error_reason = "no se pudo parsear JSON"
+                    # RAW solo si hay error:
+                    print(f"📥 LLM RAW [{idx+1}, intento {intento}] (error): {raw_content}")
                     raise ValueError(last_error_reason)
 
+                # Validaciones
                 c = (llm_json.get("clasificacion") or "").strip()
                 e = (llm_json.get("explicacion") or "").strip() or "sin explicación"
                 conf_val = llm_json.get("confianza", 0.0)
@@ -168,10 +178,12 @@ def _worker_un_registro(
                     conf_f = float(conf_val)
                 except Exception:
                     last_error_reason = f"confianza inválida: {conf_val!r}"
+                    print(f"📥 LLM RAW [{idx+1}, intento {intento}] (error): {raw_content}")
                     raise ValueError(last_error_reason)
 
                 if c not in ALLOWED:
                     last_error_reason = f"clasificacion inválida: {c!r}"
+                    print(f"📥 LLM RAW [{idx+1}, intento {intento}] (error): {raw_content}")
                     raise ValueError(last_error_reason)
 
                 # OK
@@ -181,38 +193,40 @@ def _worker_un_registro(
                 break  # éxito
 
             except Exception as e_llm:
-                # Error de parseo/validación o excepción del cliente -> backoff/reintento
                 if not last_error_reason:
                     last_error_reason = str(e_llm)
+                    # Si hubo excepción antes de tener RAW, no hay nada que imprimir
                 if intento <= max_retries:
                     wait_s = backoff_sec * (2 ** (intento - 1))
                     print(f"⏳ JSON inválido/erróneo ({last_error_reason}). "
                           f"Reintentando en {wait_s:.1f}s...")
                     time.sleep(wait_s)
                 else:
-                    print(f"⚠️ Reintentos agotados en idx {idx + 1}. Motivo: {last_error_reason}")
+                    print(f"⚠️ Reintentos agotados en idx {idx+1}. Motivo: {last_error_reason}")
 
-        # --- Fusión final ---
+        # --- Fusión final (manteniendo tus prints) ---
         base_out.update({
             "clasificacion": clasificacion,
             "explicacion": explicacion,
             "confianza": confianza
         })
 
-        print(f"✅ Procesado registro {idx + 1}")
-        print(f"🧾 Final [{idx + 1}]: {json.dumps(base_out, ensure_ascii=False)}")
+        print(f"✅ Procesado registro {idx+1}")
+        print(f"🧾 Final [{idx+1}]: {json.dumps(base_out, ensure_ascii=False)}")
         return base_out
 
     except Exception as e:
-        print(f"❌ Error en registro {idx + 1}: {e}")
+        print(f"❌ Error en registro {idx+1}: {e}")
         base_out = {
             "numero_aviso": None, "numero_siniestro": None, "placa": None,
             "fecha_observacion": None, "usuario": None, "rol_analista": None,
             "observacion": None, "clasificacion": "sin_clasificar",
             "explicacion": f"error en worker: {e}", "confianza": 0.0, "idx": idx
         }
-        print(f"🧾 Final [{idx + 1}]: {json.dumps(base_out, ensure_ascii=False)}")
+        print(f"🧾 Final [{idx+1}]: {json.dumps(base_out, ensure_ascii=False)}")
         return base_out
+
+
 
 
 # -------------------------------------------------------------------
@@ -220,11 +234,11 @@ def _worker_un_registro(
 # -------------------------------------------------------------------
 
 def procesar_observacion_individual(
-        df_observacion: pl.DataFrame,
-        prompt_sistema: str,  # no usado; compatibilidad
-        cliente_llm: Any,
-        max_workers: Optional[int] = 0,
-        chunksize: Optional[int] = 0,  # <=0 => lotes = nº de CPUs (automático)
+    df_observacion: pl.DataFrame,
+    prompt_sistema: str,   # no usado; compatibilidad
+    cliente_llm: Any,
+    max_workers: Optional[int] = 0,
+    chunksize: Optional[int] = 0,   # <=0 => lotes = nº de CPUs (automático)
 ) -> Dict[str, List[Dict[str, Any]]]:
     """
     Procesa todas las observaciones en paralelo con un pool de hilos:
