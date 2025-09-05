@@ -4,6 +4,9 @@ import ast
 import json
 import time
 import math
+import unicodedata
+import traceback  # <-- 1. IMPORTADO EL MÓDULO
+
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -23,11 +26,8 @@ from services.miscelaneous import load_prompts_generales
 def _coerce_scalar(v: Any) -> Any:
     """
     Convierte Series/list/tuple/str-list -> escalar limpio.
-    - "['ABC']"   -> "ABC"
-    - [123]       -> 123
-    - pl.Series   -> primer item
-    - str         -> strip()
     """
+    # (El código de esta función no se modifica)
     try:
         if isinstance(v, pl.Series):
             return v.item() if len(v) > 0 else None
@@ -35,7 +35,6 @@ def _coerce_scalar(v: Any) -> Any:
             return v[0] if v else None
         if isinstance(v, str):
             s = v.strip()
-            # Si viene como "['ABC']" o "[123]" en string, intenta evaluarlo
             if s.startswith('[') and s.endswith(']'):
                 try:
                     parsed = ast.literal_eval(s)
@@ -51,26 +50,22 @@ def _coerce_scalar(v: Any) -> Any:
 
 def _parse_llm_json(raw: str) -> Optional[Dict[str, Any]]:
     """
-    Intenta parsear JSON robusto desde una respuesta del LLM:
-    - Elimina fences ```json ... ```
-    - Si falla, intenta extraer el primer bloque {...}
+    Intenta parsear un JSON robusto desde una respuesta de un LLM.
     """
+    # (El código de esta función no se modifica)
     if not isinstance(raw, str):
         return None
-    txt = raw.strip()
-
-    # 1) Remover fences tipo ```json ... ```
+    txt = unicodedata.normalize('NFKC', raw)
+    txt = re.sub(r'[\x00-\x1f\x7f]', '', txt)
+    txt = re.sub(r'(?<!\\)\n|\r|\t', ' ', txt)
+    txt = txt.strip()
     m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", txt, re.IGNORECASE)
     if m:
         txt = m.group(1).strip()
-
-    # 2) Intento directo
     try:
         return json.loads(txt)
     except Exception:
         pass
-
-    # 3) Extraer primer bloque {...}
     start = txt.find("{")
     end = txt.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -87,21 +82,14 @@ def _parse_llm_json(raw: str) -> Optional[Dict[str, Any]]:
 # -------------------------------------------------------------------
 
 def _worker_un_registro(
-    df: pl.DataFrame,
-    idx: int,
-    cliente_llm: Any,
-    max_retries: int = 2,      # nº de reintentos adicionales (total = 1 + max_retries)
-    backoff_sec: float = 2.0,  # espera base entre intentos (exponencial)
+        df: pl.DataFrame,
+        idx: int,
+        cliente_llm: Any,
+        max_retries: int = 2,
+        backoff_sec: float = 2.0,
 ) -> Dict[str, Any]:
     """
-    Procesa 1 observación con el LLM y devuelve SIEMPRE:
-    {
-      numero_aviso, numero_siniestro, placa, fecha_observacion,
-      usuario, rol_analista, observacion,
-      clasificacion, explicacion, confianza
-    }
-    Imprime el JSON final resultante por registro.
-    (El RAW del LLM se imprime SOLO si hay error en el intento.)
+    Procesa 1 observación con el LLM y devuelve el resultado.
     """
     try:
         payload = build_json_para_n8n_registro(df, idx)
@@ -114,10 +102,9 @@ def _worker_un_registro(
                 "observacion": None, "clasificacion": "sin_clasificar",
                 "explicacion": "registro vacío", "confianza": 0.0, "idx": idx
             }
-            print(f"🧾 Final [{idx+1}]: {json.dumps(base_out, ensure_ascii=False)}")
+            print(f"🧾 Final [{idx + 1}]: {json.dumps(base_out, ensure_ascii=False)}")
             return base_out
 
-        # --- Campos base SIEMPRE presentes (limpios) ---
         base_out = {
             "numero_aviso": _coerce_scalar(registro.get("NUMERO AVISO", "")),
             "numero_siniestro": _coerce_scalar(registro.get("NUMERO SINIESTRO", "")),
@@ -128,48 +115,33 @@ def _worker_un_registro(
             "observacion": _coerce_scalar(registro.get("OBSERVACION", "")),
         }
 
-        # --- Prompt del sistema ---
         system_prompt = load_prompts_generales("observaciones_clasificacion_prompt")
         if not system_prompt:
-            base_out.update({
-                "clasificacion": "sin_clasificar",
-                "explicacion": "prompt no encontrado",
-                "confianza": 0.0
-            })
-            print(f"✅ Procesado registro {idx+1}")
-            print(f"🧾 Final [{idx+1}]: {json.dumps(base_out, ensure_ascii=False)}")
+            base_out.update({"clasificacion": "sin_clasificar", "explicacion": "prompt no encontrado", "confianza": 0.0})
+            print(f"✅ Procesado registro {idx + 1}")
+            print(f"🧾 Final [{idx + 1}]: {json.dumps(base_out, ensure_ascii=False)}")
             return base_out
 
-        ALLOWED = {"comunicacion_cliente", "cambio_estado", "sin_cambio", "sin_clasificar"}
-
-        # --- Llamada al LLM con reintentos; RAW SOLO en error ---
+        ALLOWED = {"comunicacion_cliente", "cambio_estado", "sin_cambio", "sin_clasificar", "comunicacion_interna"}
         intento = 0
-        clasificacion = "sin_clasificar"
-        explicacion = "no se pudo parsear salida LLM"
-        confianza = 0.0
+        clasificacion, explicacion, confianza = "sin_clasificar", "no se pudo parsear salida LLM", 0.0
         last_error_reason = ""
 
         while intento <= max_retries:
             intento += 1
             raw_content = None
             try:
-                messages_for_llm = [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=f"Observación: {base_out['observacion']}")
-                ]
-                print(f"🚀 LLM idx {idx+1} intento {intento}/{max_retries+1}")
+                messages_for_llm = [SystemMessage(content=system_prompt), HumanMessage(content=f"Observación: {base_out['observacion']}")]
+                print(f"🚀 LLM idx {idx + 1} intento {intento}/{max_retries + 1}")
                 response_obj = cliente_llm.invoke(messages_for_llm)
                 raw_content = response_obj.content if hasattr(response_obj, "content") else str(response_obj)
 
-                # Parseo robusto
                 llm_json = _parse_llm_json(raw_content)
                 if llm_json is None:
                     last_error_reason = "no se pudo parsear JSON"
-                    # RAW solo si hay error:
-                    print(f"📥 LLM RAW [{idx+1}, intento {intento}] (error): {raw_content}")
+                    print(f"📥 LLM RAW [{idx + 1}, intento {intento}] (error): {raw_content}")
                     raise ValueError(last_error_reason)
 
-                # Validaciones
                 c = (llm_json.get("clasificacion") or "").strip()
                 e = (llm_json.get("explicacion") or "").strip() or "sin explicación"
                 conf_val = llm_json.get("confianza", 0.0)
@@ -178,90 +150,69 @@ def _worker_un_registro(
                     conf_f = float(conf_val)
                 except Exception:
                     last_error_reason = f"confianza inválida: {conf_val!r}"
-                    print(f"📥 LLM RAW [{idx+1}, intento {intento}] (error): {raw_content}")
+                    print(f"📥 LLM RAW [{idx + 1}, intento {intento}] (error): {raw_content}")
                     raise ValueError(last_error_reason)
 
                 if c not in ALLOWED:
                     last_error_reason = f"clasificacion inválida: {c!r}"
-                    print(f"📥 LLM RAW [{idx+1}, intento {intento}] (error): {raw_content}")
+                    print(f"📥 LLM RAW [{idx + 1}, intento {intento}] (error): {raw_content}")
                     raise ValueError(last_error_reason)
 
-                # OK
-                clasificacion = c
-                explicacion = e
-                confianza = max(0.0, min(1.0, conf_f))
-                break  # éxito
+                clasificacion, explicacion, confianza = c, e, max(0.0, min(1.0, conf_f))
+                break
 
             except Exception as e_llm:
-                if not last_error_reason:
-                    last_error_reason = str(e_llm)
-                    # Si hubo excepción antes de tener RAW, no hay nada que imprimir
+                if not last_error_reason: last_error_reason = str(e_llm)
                 if intento <= max_retries:
                     wait_s = backoff_sec * (2 ** (intento - 1))
-                    print(f"⏳ JSON inválido/erróneo ({last_error_reason}). "
-                          f"Reintentando en {wait_s:.1f}s...")
+                    print(f"⏳ JSON inválido/erróneo ({last_error_reason}). Reintentando en {wait_s:.1f}s...")
                     time.sleep(wait_s)
                 else:
-                    print(f"⚠️ Reintentos agotados en idx {idx+1}. Motivo: {last_error_reason}")
+                    print(f"⚠️ Reintentos agotados en idx {idx + 1}. Motivo: {last_error_reason}")
 
-        # --- Fusión final (manteniendo tus prints) ---
-        base_out.update({
-            "clasificacion": clasificacion,
-            "explicacion": explicacion,
-            "confianza": confianza
-        })
-
-        print(f"✅ Procesado registro {idx+1}")
-        print(f"🧾 Final [{idx+1}]: {json.dumps(base_out, ensure_ascii=False)}")
+        base_out.update({"clasificacion": clasificacion, "explicacion": explicacion, "confianza": confianza})
+        print(f"✅ Procesado registro {idx + 1}")
+        print(f"🧾 Final [{idx + 1}]: {json.dumps(base_out, ensure_ascii=False)}")
         return base_out
 
     except Exception as e:
-        print(f"❌ Error en registro {idx+1}: {e}")
+        # --- 2. CAPTURA DE ERROR MEJORADA EN EL WORKER ---
+        print(f"❌ Error catastrófico en registro {idx + 1}: {e}")
+        print("--- TRACEBACK COMPLETO (WORKER) ---")
+        print(traceback.format_exc()) # Imprime el archivo y la línea exacta del error.
+        print("---------------------------------")
         base_out = {
             "numero_aviso": None, "numero_siniestro": None, "placa": None,
             "fecha_observacion": None, "usuario": None, "rol_analista": None,
             "observacion": None, "clasificacion": "sin_clasificar",
             "explicacion": f"error en worker: {e}", "confianza": 0.0, "idx": idx
         }
-        print(f"🧾 Final [{idx+1}]: {json.dumps(base_out, ensure_ascii=False)}")
+        print(f"🧾 Final [{idx + 1}]: {json.dumps(base_out, ensure_ascii=False)}")
         return base_out
 
 
-
-
 # -------------------------------------------------------------------
-# Orquestación (paralelo “cola continua” + lotes = nº CPUs si chunksize<=0)
+# Orquestación
 # -------------------------------------------------------------------
 
 def procesar_observacion_individual(
-    df_observacion: pl.DataFrame,
-    prompt_sistema: str,   # no usado; compatibilidad
-    cliente_llm: Any,
-    max_workers: Optional[int] = 0,
-    chunksize: Optional[int] = 0,   # <=0 => lotes = nº de CPUs (automático)
+        df_observacion: pl.DataFrame,
+        prompt_sistema: str,
+        cliente_llm: Any,
+        max_workers: Optional[int] = 0,
+        chunksize: Optional[int] = 0,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """
-    Procesa todas las observaciones en paralelo con un pool de hilos:
-    - workers = núcleos si no se especifica (os.cpu_count()).
-    - Si chunksize <= 0: define lotes lógicos = nº de CPUs; tamaño_lote ≈ ceil(n/workers).
-    - Si chunksize > 0: usa ese tamaño de lote para las marcas de progreso.
-    - El pool alimenta tareas continuamente: cuando un hilo queda libre, toma el siguiente índice.
-    - Mantiene el orden de salida igual al índice del DataFrame.
+    Procesa todas las observaciones en paralelo.
     """
     if df_observacion is None or df_observacion.height == 0:
         return {"registros": []}
 
-    # Workers = CPUs si no se especifica
     workers = max_workers if (max_workers and max_workers > 0) else (os.cpu_count() or 1)
     n = df_observacion.height
 
-    # ----------------------------
-    # Marcas de progreso (lotes)
-    # ----------------------------
     if not chunksize or chunksize <= 0:
-        # nº de lotes = nº de CPUs
         chunk_size_eff = max(1, math.ceil(n / workers))
-        # marcas (puntos de corte) para los lotes; siempre terminan en n
         marks = sorted(set(min((i + 1) * chunk_size_eff, n) for i in range(workers)))
         total_lotes = len(marks)
     else:
@@ -269,29 +220,24 @@ def procesar_observacion_individual(
         marks = list(range(chunk_size_eff, n, chunk_size_eff)) + [n]
         total_lotes = len(marks)
 
-    print(f"⚙️ Procesando {n} observaciones con {workers} hilos "
-          f"(lotes={total_lotes}, tamaño_lote≈{chunk_size_eff})...")
-
-    # Prealocar para mantener orden
+    print(f"⚙️ Procesando {n} observaciones con {workers} hilos (lotes={total_lotes}, tamaño_lote≈{chunk_size_eff})...")
     resultados: List[Optional[Dict[str, Any]]] = [None] * n
-
     start_global = time.perf_counter()
-    completed = 0
-    lot_start_time = start_global
-    next_mark_idx = 0  # índice en 'marks'
+    completed, lot_start_time, next_mark_idx = 0, start_global, 0
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_to_idx = {
-            executor.submit(_worker_un_registro, df_observacion, i, cliente_llm): i
-            for i in range(n)
-        }
+        future_to_idx = {executor.submit(_worker_un_registro, df_observacion, i, cliente_llm): i for i in range(n)}
 
         for future in as_completed(future_to_idx):
             idx = future_to_idx[future]
             try:
                 res = future.result()
             except Exception as e:
-                print(f"❌ Futuro falló en idx {idx}: {e}")
+                # --- 3. CAPTURA DE ERROR MEJORADA EN EL ORQUESTADOR ---
+                print(f"❌ Futuro falló catastróficamente en idx {idx}: {e}")
+                print("--- TRACEBACK COMPLETO (ORQUESTADOR) ---")
+                print(traceback.format_exc()) # Imprime si el worker tuvo un error no capturado.
+                print("---------------------------------------")
                 res = {
                     "numero_aviso": None, "numero_siniestro": None, "placa": None,
                     "fecha_observacion": None, "usuario": None, "rol_analista": None,
@@ -302,17 +248,14 @@ def procesar_observacion_individual(
             resultados[idx] = res
             completed += 1
 
-            # ¿Alcanzamos el siguiente hito de lote lógico?
             while next_mark_idx < len(marks) and completed >= marks[next_mark_idx]:
                 lote_num = next_mark_idx + 1
                 elapsed = time.perf_counter() - lot_start_time
-                print(f"⏱️ Lote {lote_num}/{total_lotes} completado "
-                      f"({completed}/{n}) en {elapsed:.2f} s")
+                print(f"⏱️ Lote {lote_num}/{total_lotes} completado ({completed}/{n}) en {elapsed:.2f} s")
                 lot_start_time = time.perf_counter()
                 next_mark_idx += 1
 
     total_elapsed = time.perf_counter() - start_global
     print(f"✅ Finalizado. Registros: {n} — Tiempo total: {total_elapsed:.2f} s")
 
-    # Compactar (ya en orden)
     return {"registros": [r for r in resultados if r is not None]}

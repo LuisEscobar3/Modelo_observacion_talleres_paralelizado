@@ -1,4 +1,6 @@
 import json
+import sys
+
 import dotenv
 import os
 import polars as pl
@@ -148,7 +150,7 @@ def unir_observaciones_por_caso(df: pl.DataFrame, separador: str = " | ") -> pl.
 
 # --- Ejemplo de uso ---
 if __name__ == "__main__":
-    ruta = r"C:\Users\1032497498\PycharmProjects\Modelo_observacion_talleres_paralelizado\salida_registros1.json"
+    ruta = r"C:\Users\1032497498\PycharmProjects\Modelo_observacion_talleres_paralelizado\salida_registros.json"
     dotenv.load_dotenv()
     set_debug(False)
     os.environ["APP_ENV"] = os.environ.get("APP_ENV", "sbx")
@@ -158,6 +160,7 @@ if __name__ == "__main__":
     df_casos = unir_observaciones_por_caso(df, separador=" | ")  # o "\n"
     print(df_casos.head(10))
     nfilas = len(df_casos)
+    print("dsadfaFSAFAFS")
     resultado_json = procesar_calidad_por_caso(
         df_casos=df_casos,
         prompt_sistema="",  # no se usa aquí, se deja por compatibilidad
@@ -169,4 +172,4 @@ if __name__ == "__main__":
         json.dump(resultado_json, f, ensure_ascii=False, indent=2)
     print(nfilas)
     # Para guardar:
-    # df_casos.write_csv(r"C:\Users\1032497498\PycharmProjects\Modelo_observacion_talleres_paralelizado\observaciones_por_caso.csv")
+    df_casos.write_csv(r"C:\Users\1032497498\PycharmProjects\Modelo_observacion_talleres_paralelizado\observaciones_por_caso.csv")

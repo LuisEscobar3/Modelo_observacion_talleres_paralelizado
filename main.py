@@ -7,6 +7,7 @@ import polars as pl
 from services.llm_manager import load_llms  # (no lo usamos aquí, se mantiene por compatibilidad)
 from Functions.read_csv import read_csv_with_polars
 from Functions.Process_indibitual_observations import procesar_observacion_individual
+from Functions.Unify_case import cargar_json_a_polars
 
 
 def main():
