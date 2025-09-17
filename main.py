@@ -1,13 +1,13 @@
 import os
 import json
+import sys
 import time
 import dotenv
 from langchain.globals import set_debug
-import polars as pl
 from services.llm_manager import load_llms  # (no lo usamos aquí, se mantiene por compatibilidad)
 from Functions.read_csv import read_csv_with_polars
 from Functions.Process_indibitual_observations import procesar_observacion_individual
-from Functions.Unify_case import cargar_json_a_polars
+
 
 
 def main():
@@ -26,6 +26,7 @@ def main():
     # 1) Leer datos con Polars
     df_data = read_csv_with_polars(ruta_csv)
     print(df_data.head())
+    print(df_data.columns)
 
     # 2) Cronometrar el procesamiento
     start_time = time.perf_counter()
@@ -35,7 +36,7 @@ def main():
         prompt_sistema="",  # no se usa en esta función
         cliente_llm=gemini,  # no se usa en esta función
         max_workers=0,  # usa número de núcleos disponibles
-        chunksize=1000,
+        chunksize=0,
     )
 
     end_time = time.perf_counter()
@@ -50,7 +51,7 @@ def main():
         json.dump(resultado_json, f, ensure_ascii=False, indent=2)
     print(f"📂 JSON generado en: {salida_json}")
 
-
+    sys.exit(0)
 
     df = cargar_json_a_polars(salida_json)
     df_casos = unir_observaciones_por_caso(df, separador=" | ")  # o "\n"

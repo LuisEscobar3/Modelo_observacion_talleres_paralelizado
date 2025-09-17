@@ -6,7 +6,10 @@ import os
 import polars as pl
 from pathlib import Path
 from langchain.globals import set_debug
+
+from Functions.Procees_per_case_patched import procesar_calidad_por_caso
 from Procees_per_case import procesar_calidad_por_caso
+# from Procees_per_case_patched import procesar_calidad_por_caso
 from services.llm_manager import load_llms
 
 
@@ -59,8 +62,33 @@ def unir_observaciones_por_caso(df: pl.DataFrame, separador: str = " | ") -> pl.
     """
     1 fila por (numero_siniestro, placa) con eventos unidos:
     "YYYY-MM-DD - OBSERVACION [clasificacion]" en orden de fecha asc.
+    Salida (en minúscula): nit_taller, nombre_taller, numero_aviso, numero_siniestro, placa,
+                           usuario, rol_analista, total_eventos, observaciones_unidas
     """
-    # 1) Limpiar textos (trim y quitar '=' inicial si viene de Excel)
+
+    # --- 0) Crear alias canónicos en minúscula (si no existe la columna, se crea vacía) ---
+    def alias_if_exists(candidates, target):
+        for name in candidates:
+            if name in df.columns:
+                return pl.col(name).alias(target)
+        return pl.lit("").alias(target)
+
+    exprs_alias = [
+        alias_if_exists(["NIT TALLER", "nit_taller"], "nit_taller"),
+        alias_if_exists(["NOMBRE TALLER", "nombre_taller"], "nombre_taller"),
+        alias_if_exists(["NUMERO AVISO", "numero_aviso"], "numero_aviso"),
+        alias_if_exists(["NUMERO SINIESTRO", "numero_siniestro"], "numero_siniestro"),
+        alias_if_exists(["PLACA", "placa"], "placa"),
+        alias_if_exists(["USUARIO", "usuario"], "usuario"),
+        alias_if_exists(["ROL ANALISTA", "rol_analista"], "rol_analista"),
+        alias_if_exists(["OBSERVACION", "observacion"], "observacion"),
+        alias_if_exists(["CLASIFICACION", "clasificacion"], "clasificacion"),
+        alias_if_exists(["FECHA OBSERVACION", "fecha_observacion"], "fecha_observacion"),
+    ]
+
+    df = df.with_columns(exprs_alias)
+
+    # --- 1) Limpiar textos (trim y quitar '=' inicial si viene de Excel) ---
     cols_texto = [
         "numero_aviso", "numero_siniestro", "placa", "usuario",
         "rol_analista", "observacion", "clasificacion", "fecha_observacion"
@@ -70,7 +98,7 @@ def unir_observaciones_por_caso(df: pl.DataFrame, separador: str = " | ") -> pl.
         for c in cols_texto
     ])
 
-    # 2) Normalizar fecha a texto y colapsar espacios -> fecha_obs_norm
+    # --- 2) Normalizar fecha a texto y colapsar espacios -> fecha_obs_norm ---
     df2 = df1.with_columns(
         pl.col("fecha_observacion")
         .cast(pl.Utf8).fill_null("").str.strip_chars()
@@ -78,7 +106,7 @@ def unir_observaciones_por_caso(df: pl.DataFrame, separador: str = " | ") -> pl.
         .alias("fecha_obs_norm")
     )
 
-    # 3) Parsear fecha a datetime en varios formatos -> fecha_dt
+    # --- 3) Parsear fecha a datetime en varios formatos -> fecha_dt ---
     df3 = df2.with_columns(
         pl.coalesce([
             pl.col("fecha_obs_norm").str.strptime(pl.Datetime, format="%Y/%m/%d %I:%M:%S %p", strict=False),
@@ -87,7 +115,7 @@ def unir_observaciones_por_caso(df: pl.DataFrame, separador: str = " | ") -> pl.
         ]).alias("fecha_dt")
     )
 
-    # 4) Formato final de fecha printable -> fecha_fmt
+    # --- 4) Formato final de fecha printable -> fecha_fmt ---
     df4 = df3.with_columns(
         pl.when(pl.col("fecha_dt").is_not_null())
         .then(pl.col("fecha_dt").dt.strftime("%Y-%m-%d"))
@@ -95,7 +123,7 @@ def unir_observaciones_por_caso(df: pl.DataFrame, separador: str = " | ") -> pl.
         .alias("fecha_fmt")
     )
 
-    # 5a) Tag opcional de clasificación: " [clasificacion]"
+    # --- 5a) Tag opcional de clasificación: " [clasificacion]" ---
     df5a = df4.with_columns(
         pl.when(pl.col("clasificacion").is_null() | (pl.col("clasificacion") == ""))
         .then(pl.lit(""))
@@ -103,13 +131,13 @@ def unir_observaciones_por_caso(df: pl.DataFrame, separador: str = " | ") -> pl.
         .alias("tag_clasif")
     )
 
-    # 5b) Texto del evento: "YYYY-MM-DD - OBSERVACION[ tag ]"
+    # --- 5b) Texto del evento: "YYYY-MM-DD - OBSERVACION[ tag ]" ---
     df5b = df5a.with_columns(
         (pl.col("fecha_fmt") + pl.lit(" - ") + pl.col("observacion").str.strip_chars() + pl.col("tag_clasif"))
         .alias("evento_fmt")
     )
 
-    # 5c) Versión filtrable (None si observación vacía)
+    # --- 5c) Versión filtrable (None si observación vacía) ---
     df5 = df5b.with_columns(
         pl.when(pl.col("observacion").str.strip_chars() == "")
         .then(pl.lit(None))
@@ -117,25 +145,37 @@ def unir_observaciones_por_caso(df: pl.DataFrame, separador: str = " | ") -> pl.
         .alias("evento_fmt_nonempty")
     )
 
-    # 6) Ordenar por caso y fecha (usa fecha_dt; si falta, fecha_obs_norm)
+    # --- 6) Ordenar por caso y fecha ---
     df_sorted = df5.sort(["numero_siniestro", "placa", "fecha_dt", "fecha_obs_norm"])
 
-    # 7) Agrupar por caso y unir eventos no vacíos
+    # --- 7) Agrupar por caso y unir eventos no vacíos ---
     out = (
         df_sorted
         .group_by(["numero_siniestro", "placa"], maintain_order=True)
         .agg([
+            # Taller (primer valor del grupo)
+            pl.col("nit_taller").first().alias("nit_taller"),
+            pl.col("nombre_taller").first().alias("nombre_taller"),
+
+            # Trazabilidad básica
             pl.col("numero_aviso").first().alias("numero_aviso"),
             pl.col("usuario").first().alias("usuario"),
             pl.col("rol_analista").first().alias("rol_analista"),
+
+            # Métricas
             pl.len().alias("total_eventos"),
-            # recolectar eventos a lista (sin nulos) y luego unir
+
+            # Eventos unidos
             pl.col("evento_fmt_nonempty").drop_nulls().implode().alias("eventos_list"),
         ])
         .with_columns(
             pl.col("eventos_list").list.join(separador).fill_null("").alias("observaciones_unidas")
         )
         .select([
+            # <-- De primeros los del taller (en minúscula como pediste)
+            "nit_taller",
+            "nombre_taller",
+
             "numero_aviso",
             "numero_siniestro",
             "placa",
@@ -172,4 +212,5 @@ if __name__ == "__main__":
         json.dump(resultado_json, f, ensure_ascii=False, indent=2)
     print(nfilas)
     # Para guardar:
-    df_casos.write_csv(r"C:\Users\1032497498\PycharmProjects\Modelo_observacion_talleres_paralelizado\observaciones_por_caso.csv")
+    df_casos.write_csv(
+        r"C:\Users\1032497498\PycharmProjects\Modelo_observacion_talleres_paralelizado\observaciones_por_caso.csv")

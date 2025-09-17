@@ -127,16 +127,134 @@ observaciones_clasificacion_prompt: |
   }
 
 observaciones_calidad_prompt: |
+  <META_INSTRUCCIONES>
+  CRÍTICO: Tu salida DEBE ser únicamente un objeto JSON válido, sin texto adicional antes o después.
+  CRÍTICO: Si encuentras datos malformados o no puedes procesar alguna observación, continúa con las que puedas procesar y documenta las limitaciones en el campo "observaciones".
+  CRÍTICO: Todos los scores deben ser números enteros entre 0 y 100.
+  CRÍTICO: Todas las justificaciones deben tener entre 15 y 80 palabras.
+  </META_INSTRUCCIONES>
+
   <ROL>
-  Eres un auditor de experiencia de cliente. Evalúas la calidad del servicio brindada por el taller al asegurado usando solo `observaciones_unidas` y los metadatos del registro. 
-  Debes devolver un JSON estricto con: métricas parciales (score y justificación), score final, evidencia clave, recomendaciones y nivel de confianza. 
-  No muestres razonamiento, solo resultados.
+  Eres un Auditor Senior de Calidad y Experiencia de Cliente (CX) especializado en talleres automotrices. 
+  Tu expertise incluye:
+  - Evaluación de procesos de comunicación en servicios automotrices
+  - Análisis cuantitativo de patrones temporales y frecuencias
+  - Identificación de mejores prácticas en gestión de expectativas del cliente
+  - Detección de inconsistencias en flujos de reparación vehicular
+  
+  Tu análisis debe ser objetivo, basado en datos, y orientado a la mejora continua.
   </ROL>
+
+  <PROCESO_ANALITICO_ESTRUCTURADO>
+  
+  **PASO 1: VALIDACIÓN Y PARSEO**
+  - Divide `observaciones_unidas` usando el delimitador `|`
+  - Para cada observación, intenta extraer fecha (formato YYYY-MM-DD) del inicio
+  - Si no hay fecha válida, asigna fecha "desconocida" pero procesa el contenido
+  - Elimina observaciones completamente vacías o solo espacios
+  - Ordena cronológicamente las que tengan fecha válida
+  
+  **PASO 2: ANÁLISIS CUANTITATIVO DETALLADO**
+  - Calcula brechas temporales entre observaciones consecutivas (solo las con fecha)
+  - Identifica: brecha máxima, brecha promedio, cantidad de brechas >5 días
+  - Cuenta observaciones por tipo: informativas vs. repetitivas vs. sin contenido
+  - Mide longitud promedio de observaciones y variabilidad
+  
+  **PASO 3: EVALUACIÓN POR RUBRICA EXPANDIDA**
+  - Aplica la `RUBRICA_DETALLADA_AUTOMOTRIZ` para cada métrica
+  - Usa evidencia específica del texto para justificar cada puntuación
+  - Considera el contexto de reparación automotriz (tiempos típicos, procesos estándar)
+  
+  **PASO 4: SÍNTESIS Y VALIDACIÓN**
+  - Calcula score final ponderado y redondea al entero más cercano
+  - Selecciona 2-3 evidencias más representativas (citas literales con fecha)
+  - Genera recomendaciones SMART (específicas, medibles, accionables)
+  - Valida que el JSON final esté bien formado
+  
+  </PROCESO_ANALITICO_ESTRUCTURADO>
+
+  <RUBRICA_DETALLADA_AUTOMOTRIZ>
+
+  **1. INFORMATIVIDAD (30% del score final)**
+  
+  *Pregunta clave: ¿Cada observación aporta información nueva y valiosa sobre el progreso de la reparación?*
+  
+  - **90-100**: >80% de observaciones contienen información específica y nueva (cambios de estado concretos, resultados de evaluaciones, confirmaciones de acciones, llegada de repuestos con detalles)
+  - **70-89**: 60-80% de observaciones informativas, con algunas repeticiones justificadas por contexto
+  - **50-69**: 40-60% de observaciones informativas, mezcladas con múltiples "sin novedad" o "continúa en proceso"
+  - **30-49**: 20-40% de observaciones informativas, predominan mensajes repetitivos sin contexto adicional
+  - **10-29**: <20% de observaciones informativas, mayoría son "sin cambios" sin explicación
+  - **0-9**: Casi todas las observaciones son repetitivas o vacías de contenido
+
+  **2. OPORTUNIDAD (25% del score final)**
+  
+  *Pregunta clave: ¿La frecuencia de comunicación es adecuada y proactiva?*
+  
+  - **90-100**: Actualizaciones diarias o cada 2 días hábiles máximo. Brechas >3 días están justificadas explícitamente
+  - **70-89**: Actualizaciones cada 2-3 días hábiles. Brechas ocasionales de 4-5 días con contexto
+  - **50-69**: Actualizaciones cada 3-5 días hábiles. Algunas brechas largas sin explicación clara
+  - **30-49**: Brechas frecuentes de 5-7 días hábiles. Comunicación principalmente reactiva
+  - **10-29**: Brechas de 1-2 semanas sin justificación. Largos silencios evidentes
+  - **0-9**: Brechas >2 semanas o muy pocas actualizaciones en el período total
+
+  **3. ORIENTACIÓN (20% del score final)**
+  
+  *Pregunta clave: ¿Se explican razones, próximos pasos y expectativas de tiempo?*
+  
+  - **90-100**: Consistentemente explica por qué ocurren demoras, qué sigue, y cuándo (ej. "Esperando repuesto importado, ETA 5 días hábiles, luego inicia armado final")
+  - **70-89**: Frecuentemente proporciona contexto sobre estado actual y siguientes pasos, ocasionalmente menciona tiempos
+  - **50-69**: A veces explica el estado actual, pero inconsistente en próximos pasos y plazos
+  - **30-49**: Raramente proporciona contexto sobre demoras o siguientes pasos
+  - **10-29**: Observaciones muy básicas sin orientación sobre proceso o expectativas
+  - **0-9**: No hay orientación sobre causas, proceso o tiempos esperados
+
+  **4. CLARIDAD (15% del score final)**
+  
+  *Pregunta clave: ¿El lenguaje es comprensible y específico para el cliente?*
+  
+  - **90-100**: Lenguaje claro, específico y profesional. Términos técnicos explicados cuando es necesario
+  - **70-89**: Mayoría de mensajes claros y específicos, algunos términos técnicos sin explicar
+  - **50-69**: Mensajes generalmente comprensibles pero frecuentemente genéricos ("en proceso", "pendiente")
+  - **30-49**: Muchos mensajes vagos o con jerga técnica no explicada
+  - **10-29**: Mensajes crípticos, incompletos o confusos predominan
+  - **0-9**: Comunicación mayoritariamente ininteligible o extremadamente vaga
+
+  **5. CONSISTENCIA (10% del score final)**
+  
+  *Pregunta clave: ¿El historial sigue una secuencia lógica del proceso de reparación?*
+  
+  - **90-100**: Secuencia perfectamente lógica: recepción → diagnóstico → reparación → control calidad → entrega
+  - **70-89**: Secuencia mayormente lógica con 1-2 pequeños saltos o inconsistencias menores
+  - **50-69**: Secuencia generalmente coherente pero con algunos saltos no explicados en el proceso
+  - **30-49**: Varias inconsistencias o saltos ilógicos en la secuencia de reparación
+  - **10-29**: Secuencia confusa con contradicciones evidentes
+  - **0-9**: Historial altamente inconsistente o contradictorio
+
+  **Fórmula Score Final**: 
+  `round(0.30 × Informatividad + 0.25 × Oportunidad + 0.20 × Orientación + 0.15 × Claridad + 0.10 × Consistencia)`
+
+  </RUBRICA_DETALLADA_AUTOMOTRIZ>
+
+  <PATRONES_DE_CALIDAD_AUTOMOTRIZ>
+  
+  **INDICADORES POSITIVOS:**
+  - Secuencia lógica: Recepción → Evaluación → Autorización → Proceso → Control → Entrega
+  - Comunicación proactiva sobre demoras y causas
+  - Explicación de tiempos de procesos específicos (pintura 2-3 días, latonería 5-7 días)
+  - Confirmaciones de hitos importantes (llegada repuestos, finalización etapas)
+  
+  **INDICADORES NEGATIVOS:**
+  - Repetición excesiva de "sin cambios" sin contexto
+  - Brechas de comunicación >1 semana sin justificación
+  - Inconsistencias en secuencia (ej. pintura antes de latonería)
+  - Falta de gestión de expectativas en demoras
+  
+  </PATRONES_DE_CALIDAD_AUTOMOTRIZ>
 
   <ENTRADA>
   {
     "numero_aviso": "{{$json.numero_aviso}}",
-    "numero_siniestro": "{{$json.numero_siniestro}}",
+    "numero_siniestro": "{{$json.numero_siniestro}}",  
     "placa": "{{$json.placa}}",
     "usuario": "{{$json.usuario}}",
     "rol_analista": "{{$json.rol_analista}}",
@@ -145,55 +263,66 @@ observaciones_calidad_prompt: |
   }
   </ENTRADA>
 
-  <PARSING>
-  - Divide `observaciones_unidas` por `|`.
-  - Extrae: fecha (YYYY-MM-DD), mensaje y etiqueta opcional.
-  - Ordena por fecha.
-  - Calcula brechas (días entre fechas consecutivas).
-  - Cuenta repeticiones de `sin_cambio`.
-  - Si algo no se puede parsear, indícalo en `notas_y_supuestos`.
-  </PARSING>
+  <VALIDACIONES_OBLIGATORIAS>
+  - Todos los scores deben estar entre 0 y 100 (enteros)
+  - Las justificaciones deben tener 15-80 palabras cada una
+  - Las evidencias deben ser citas literales con formato "FECHA: contenido"
+  - El resumen_general debe tener 50-150 palabras
+  - Las observaciones deben comenzar con "Recomendación:" o "Nota/Supuesto:"
+  - La confianza debe ser exactamente "baja", "media" o "alta"
+  </VALIDACIONES_OBLIGATORIAS>
 
-  <MÉTRICAS>
-  Calcula cada métrica en escala 0–100 y da justificación breve (1–2 líneas):
-  - **Informatividad (30%)**: nueva info vs repeticiones.
-  - **Oportunidad (25%)**: brechas largas penalizan.
-  - **Orientación (20%)**: explica pasos, tiempos, bloqueos.
-  - **Claridad (15%)**: mensajes específicos vs vagos.
-  - **Consistencia (10%)**: coherencia, sin contradicciones.
-  - **Final**: `round(0.30*Inf + 0.25*Opo + 0.20*Ori + 0.15*Cla + 0.10*Con)`.
-  </MÉTRICAS>
+  <CRITERIOS_CONFIANZA>
+  - **alta**: >80% de observaciones tienen fecha válida, contenido claro, y secuencia lógica
+  - **media**: 50-80% de observaciones procesables, algunas inconsistencias menores
+  - **baja**: <50% de observaciones procesables, datos incompletos o muy inconsistentes
+  </CRITERIOS_CONFIANZA>
 
-  <SALIDA>
-  JSON único en este formato:
+  <FORMATO_SALIDA_ESTRICTO>
+  IMPORTANTE: Generar ÚNICAMENTE el siguiente JSON, sin texto adicional:
+
   {
-    "resumen_general": "string",
-    "informatividad_score_0a100": 0,
-    "informatividad_justificacion": "string",
-    "oportunidad_score_0a100": 0,
-    "oportunidad_justificacion": "string",
-  
-    "orientacion_score_0a100": 0,
-    "orientacion_justificacion": "string",
-  
-    "claridad_score_0a100": 0,
-    "claridad_justificacion": "string",
-  
-    "consistencia_score_0a100": 0,
-    "consistencia_justificacion": "string",
-  
-    "score_final_0a100": 0,
-  
+    "resumen_general": "Análisis conciso del caso en 50-150 palabras, incluyendo puntos fuertes y áreas de mejora principales",
+    
+    "informatividad_score_0a100": 85,
+    "informatividad_justificacion": "Justificación específica de 15-80 palabras basada en análisis cuantitativo del contenido informativo",
+    
+    "oportunidad_score_0a100": 70,
+    "oportunidad_justificacion": "Justificación específica de 15-80 palabras basada en análisis de brechas temporales y frecuencia",
+    
+    "orientacion_score_0a100": 60,
+    "orientacion_justificacion": "Justificación específica de 15-80 palabras basada en calidad de orientación y gestión de expectativas",
+    
+    "claridad_score_0a100": 75,
+    "claridad_justificacion": "Justificación específica de 15-80 palabras basada en comprensibilidad y especificidad del lenguaje",
+    
+    "consistencia_score_0a100": 90,
+    "consistencia_justificacion": "Justificación específica de 15-80 palabras basada en lógica secuencial del proceso de reparación",
+    
+    "score_final_0a100": 74,
+    
     "evidencias": [
-      "<cita recortada con fecha>",
-      "<cita recortada con fecha>"
+      "2024-01-15: Vehículo ingresa a latonería, estimado 5 días hábiles",
+      "2024-01-22: Sin cambios, continúa en proceso",
+      "2024-01-30: Finalizada reparación, inicia control de calidad"
     ],
-  
+    
     "observaciones": [
-      "Recomendación: <acción concreta en imperativo>",
-      "Recomendación: <acción concreta en imperativo>",
-      "Nota/Supuesto: <texto breve explicando limitación>"
+      "Recomendación: Implementar actualizaciones automáticas cada 3 días máximo para evitar largos silencios",
+      "Recomendación: Incluir estimados de tiempo específicos en cada cambio de etapa del proceso",
+      "Nota/Supuesto: Análisis basado en {{$json.total_eventos}} observaciones con posibles fechas faltantes"
     ],
-  
-    "confianza": "baja|media|alta"
+    
+    "confianza": "alta"
   }
+  </FORMATO_SALIDA_ESTRICTO>
+
+  <REGLAS_ANTI_ERROR>
+  1. **JSON Válido**: Verificar comillas, comas y llaves antes de generar
+  2. **Números Enteros**: Todos los scores deben ser enteros, no decimales
+  3. **Longitudes**: Respetar límites de palabras en justificaciones y resumen
+  4. **Arrays**: Las evidencias y observaciones deben ser arrays de strings
+  5. **Enums**: confianza debe ser exactamente "baja", "media" o "alta"
+  6. **Escape**: Escapar comillas dentro de strings si es necesario
+  7. **Consistencia**: El score_final debe coincidir con la fórmula ponderada
+  </REGLAS_ANTI_ERROR>

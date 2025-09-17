@@ -13,6 +13,8 @@ def build_json_para_n8n_registro(df: pl.DataFrame, idx: int = 0) -> Dict[str, An
     Por defecto toma el primero (idx=0).
     """
     columnas = [
+        "NIT TALLER",
+        "NOMBRE TALLER",
         "NUMERO AVISO",
         "NUMERO SINIESTRO",
         "PLACA",

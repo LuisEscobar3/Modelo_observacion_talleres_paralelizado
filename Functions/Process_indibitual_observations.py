@@ -5,8 +5,8 @@ import json
 import time
 import math
 import unicodedata
-import traceback  # <-- 1. IMPORTADO EL MÓDULO
-
+import traceback
+import sys
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -20,14 +20,42 @@ from services.miscelaneous import load_prompts_generales
 
 
 # -------------------------------------------------------------------
+# Helper de logging de excepciones (detallado)
+# -------------------------------------------------------------------
+def _log_exception_detallado(e: BaseException, contexto: str = "") -> None:
+    """
+    Imprime tipo de excepción, mensaje y traza frame por frame (archivo, línea, función y código),
+    además de la traza completa.
+    """
+    tipo = type(e).__name__
+    msg = f"{tipo}: {e}"
+    if contexto:
+        print(f"❌ [{contexto}] {msg}")
+    else:
+        print(f"❌ {msg}")
+
+    tb = e.__traceback__
+    for i, frame in enumerate(traceback.extract_tb(tb), start=1):
+        archivo = frame.filename
+        linea = frame.lineno
+        funcion = frame.name
+        codigo = (frame.line or "").strip()
+        print(f"   #{i} File \"{archivo}\", line {linea}, in {funcion}")
+        if codigo:
+            print(f"       → {codigo}")
+
+    print("--- TRACEBACK COMPLETO ---")
+    print("".join(traceback.format_exception(type(e), e, e.__traceback__)))
+    print("--------------------------")
+
+
+# -------------------------------------------------------------------
 # Helpers
 # -------------------------------------------------------------------
-
 def _coerce_scalar(v: Any) -> Any:
     """
     Convierte Series/list/tuple/str-list -> escalar limpio.
     """
-    # (El código de esta función no se modifica)
     try:
         if isinstance(v, pl.Series):
             return v.item() if len(v) > 0 else None
@@ -52,20 +80,22 @@ def _parse_llm_json(raw: str) -> Optional[Dict[str, Any]]:
     """
     Intenta parsear un JSON robusto desde una respuesta de un LLM.
     """
-    # (El código de esta función no se modifica)
     if not isinstance(raw, str):
         return None
     txt = unicodedata.normalize('NFKC', raw)
     txt = re.sub(r'[\x00-\x1f\x7f]', '', txt)
     txt = re.sub(r'(?<!\\)\n|\r|\t', ' ', txt)
     txt = txt.strip()
+    # Extrae bloque entre ```json ... ```
     m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", txt, re.IGNORECASE)
     if m:
         txt = m.group(1).strip()
+    # Intento directo
     try:
         return json.loads(txt)
     except Exception:
         pass
+    # Fallback a primer {...} bien formado
     start = txt.find("{")
     end = txt.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -80,7 +110,6 @@ def _parse_llm_json(raw: str) -> Optional[Dict[str, Any]]:
 # -------------------------------------------------------------------
 # Worker (procesa 1 registro)
 # -------------------------------------------------------------------
-
 def _worker_un_registro(
         df: pl.DataFrame,
         idx: int,
@@ -94,18 +123,36 @@ def _worker_un_registro(
     try:
         payload = build_json_para_n8n_registro(df, idx)
         registro = payload.get("registro")
+
         if not registro:
             print(f"⚠️ Registro vacío en índice {idx}")
             base_out = {
-                "numero_aviso": None, "numero_siniestro": None, "placa": None,
-                "fecha_observacion": None, "usuario": None, "rol_analista": None,
-                "observacion": None, "clasificacion": "sin_clasificar",
-                "explicacion": "registro vacío", "confianza": 0.0, "idx": idx
+                # Primero los solicitados
+                "NIT TALLER": None,
+                "NOMBRE TALLER": None,
+
+                # Resto del payload
+                "numero_aviso": None,
+                "numero_siniestro": None,
+                "placa": None,
+                "fecha_observacion": None,
+                "usuario": None,
+                "rol_analista": None,
+                "observacion": None,
+                "clasificacion": "sin_clasificar",
+                "explicacion": "registro vacío",
+                "confianza": 0.0,
+                "idx": idx
             }
             print(f"🧾 Final [{idx + 1}]: {json.dumps(base_out, ensure_ascii=False)}")
             return base_out
 
+        # Construye base_out con el orden deseado (primero NIT/NOMBRE)
         base_out = {
+            # Primero los solicitados (con nombres exactos)
+            "NIT TALLER": _coerce_scalar(registro.get("NIT TALLER", "")),
+            "NOMBRE TALLER": _coerce_scalar(registro.get("NOMBRE TALLER", "")),
+            # Resto del payload
             "numero_aviso": _coerce_scalar(registro.get("NUMERO AVISO", "")),
             "numero_siniestro": _coerce_scalar(registro.get("NUMERO SINIESTRO", "")),
             "placa": _coerce_scalar(registro.get("PLACA", "")),
@@ -115,9 +162,14 @@ def _worker_un_registro(
             "observacion": _coerce_scalar(registro.get("OBSERVACION", "")),
         }
 
+        # Carga de prompt del sistema
         system_prompt = load_prompts_generales("observaciones_clasificacion_prompt")
         if not system_prompt:
-            base_out.update({"clasificacion": "sin_clasificar", "explicacion": "prompt no encontrado", "confianza": 0.0})
+            base_out.update({
+                "clasificacion": "sin_clasificar",
+                "explicacion": "prompt no encontrado",
+                "confianza": 0.0
+            })
             print(f"✅ Procesado registro {idx + 1}")
             print(f"🧾 Final [{idx + 1}]: {json.dumps(base_out, ensure_ascii=False)}")
             return base_out
@@ -131,7 +183,10 @@ def _worker_un_registro(
             intento += 1
             raw_content = None
             try:
-                messages_for_llm = [SystemMessage(content=system_prompt), HumanMessage(content=f"Observación: {base_out['observacion']}")]
+                messages_for_llm = [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=f"Observación: {base_out['observacion']}")
+                ]
                 print(f"🚀 LLM idx {idx + 1} intento {intento}/{max_retries + 1}")
                 response_obj = cliente_llm.invoke(messages_for_llm)
                 raw_content = response_obj.content if hasattr(response_obj, "content") else str(response_obj)
@@ -162,7 +217,10 @@ def _worker_un_registro(
                 break
 
             except Exception as e_llm:
-                if not last_error_reason: last_error_reason = str(e_llm)
+                # Log de error detallado por intento de LLM
+                _log_exception_detallado(e_llm, contexto=f"WORKER LLM idx={idx + 1} intento={intento}")
+                if not last_error_reason:
+                    last_error_reason = str(e_llm)
                 if intento <= max_retries:
                     wait_s = backoff_sec * (2 ** (intento - 1))
                     print(f"⏳ JSON inválido/erróneo ({last_error_reason}). Reintentando en {wait_s:.1f}s...")
@@ -170,22 +228,34 @@ def _worker_un_registro(
                 else:
                     print(f"⚠️ Reintentos agotados en idx {idx + 1}. Motivo: {last_error_reason}")
 
-        base_out.update({"clasificacion": clasificacion, "explicacion": explicacion, "confianza": confianza})
+        base_out.update({
+            "clasificacion": clasificacion,
+            "explicacion": explicacion,
+            "confianza": confianza
+        })
         print(f"✅ Procesado registro {idx + 1}")
         print(f"🧾 Final [{idx + 1}]: {json.dumps(base_out, ensure_ascii=False)}")
         return base_out
 
     except Exception as e:
-        # --- 2. CAPTURA DE ERROR MEJORADA EN EL WORKER ---
-        print(f"❌ Error catastrófico en registro {idx + 1}: {e}")
-        print("--- TRACEBACK COMPLETO (WORKER) ---")
-        print(traceback.format_exc()) # Imprime el archivo y la línea exacta del error.
-        print("---------------------------------")
+        # Captura de error mejorada en el worker
+        _log_exception_detallado(e, contexto=f"WORKER idx={idx + 1}")
         base_out = {
-            "numero_aviso": None, "numero_siniestro": None, "placa": None,
-            "fecha_observacion": None, "usuario": None, "rol_analista": None,
-            "observacion": None, "clasificacion": "sin_clasificar",
-            "explicacion": f"error en worker: {e}", "confianza": 0.0, "idx": idx
+            # Primero los solicitados, también en errores
+            "NIT TALLER": None,
+            "NOMBRE TALLER": None,
+
+            "numero_aviso": None,
+            "numero_siniestro": None,
+            "placa": None,
+            "fecha_observacion": None,
+            "usuario": None,
+            "rol_analista": None,
+            "observacion": None,
+            "clasificacion": "sin_clasificar",
+            "explicacion": f"{type(e).__name__}: {e}",
+            "confianza": 0.0,
+            "idx": idx
         }
         print(f"🧾 Final [{idx + 1}]: {json.dumps(base_out, ensure_ascii=False)}")
         return base_out
@@ -194,7 +264,6 @@ def _worker_un_registro(
 # -------------------------------------------------------------------
 # Orquestación
 # -------------------------------------------------------------------
-
 def procesar_observacion_individual(
         df_observacion: pl.DataFrame,
         prompt_sistema: str,
@@ -226,23 +295,34 @@ def procesar_observacion_individual(
     completed, lot_start_time, next_mark_idx = 0, start_global, 0
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_to_idx = {executor.submit(_worker_un_registro, df_observacion, i, cliente_llm): i for i in range(n)}
+        future_to_idx = {
+            executor.submit(_worker_un_registro, df_observacion, i, cliente_llm): i
+            for i in range(n)
+        }
 
         for future in as_completed(future_to_idx):
             idx = future_to_idx[future]
             try:
                 res = future.result()
             except Exception as e:
-                # --- 3. CAPTURA DE ERROR MEJORADA EN EL ORQUESTADOR ---
-                print(f"❌ Futuro falló catastróficamente en idx {idx}: {e}")
-                print("--- TRACEBACK COMPLETO (ORQUESTADOR) ---")
-                print(traceback.format_exc()) # Imprime si el worker tuvo un error no capturado.
-                print("---------------------------------------")
+                # Captura de error mejorada en el orquestador
+                _log_exception_detallado(e, contexto=f"ORQUESTADOR idx={idx}")
                 res = {
-                    "numero_aviso": None, "numero_siniestro": None, "placa": None,
-                    "fecha_observacion": None, "usuario": None, "rol_analista": None,
-                    "observacion": None, "clasificacion": "sin_clasificar",
-                    "explicacion": f"excepción en futuro: {e}", "confianza": 0.0, "idx": idx
+                    # Mantener orden con NIT/NOMBRE primero también aquí
+                    "NIT TALLER": None,
+                    "NOMBRE TALLER": None,
+
+                    "numero_aviso": None,
+                    "numero_siniestro": None,
+                    "placa": None,
+                    "fecha_observacion": None,
+                    "usuario": None,
+                    "rol_analista": None,
+                    "observacion": None,
+                    "clasificacion": "sin_clasificar",
+                    "explicacion": f"{type(e).__name__}: {e}",
+                    "confianza": 0.0,
+                    "idx": idx
                 }
 
             resultados[idx] = res
