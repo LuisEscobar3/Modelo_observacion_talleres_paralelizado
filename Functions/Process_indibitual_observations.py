@@ -23,10 +23,6 @@ from services.miscelaneous import load_prompts_generales
 # Helper de logging de excepciones (detallado)
 # -------------------------------------------------------------------
 def _log_exception_detallado(e: BaseException, contexto: str = "") -> None:
-    """
-    Imprime tipo de excepción, mensaje y traza frame por frame (archivo, línea, función y código),
-    además de la traza completa.
-    """
     tipo = type(e).__name__
     msg = f"{tipo}: {e}"
     if contexto:
@@ -86,7 +82,7 @@ def _parse_llm_json(raw: str) -> Optional[Dict[str, Any]]:
     txt = re.sub(r'[\x00-\x1f\x7f]', '', txt)
     txt = re.sub(r'(?<!\\)\n|\r|\t', ' ', txt)
     txt = txt.strip()
-    # Extrae bloque entre ```json ... ```
+    # Extrae bloque entre ```json ... ``` o ``` ... ```
     m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", txt, re.IGNORECASE)
     if m:
         txt = m.group(1).strip()
@@ -139,9 +135,19 @@ def _worker_un_registro(
                 "usuario": None,
                 "rol_analista": None,
                 "observacion": None,
+
+                # Campos originales
                 "clasificacion": "sin_clasificar",
                 "explicacion": "registro vacío",
                 "confianza": 0.0,
+
+                # ➕ Campos nuevos (mismo nivel)
+                "explicacion_clasificacion": "registro vacío",
+                "confianza_clasificacion": 0.0,
+                "calidad_comunicativa_score": 0,
+                "explicacion_calidad": "No hay contenido para evaluar valor práctico.",
+                "elementos_faltantes": [],
+
                 "idx": idx
             }
             print(f"🧾 Final [{idx + 1}]: {json.dumps(base_out, ensure_ascii=False)}")
@@ -168,7 +174,14 @@ def _worker_un_registro(
             base_out.update({
                 "clasificacion": "sin_clasificar",
                 "explicacion": "prompt no encontrado",
-                "confianza": 0.0
+                "confianza": 0.0,
+
+                # ➕ Campos nuevos
+                "explicacion_clasificacion": "prompt no encontrado",
+                "confianza_clasificacion": 0.0,
+                "calidad_comunicativa_score": 0,
+                "explicacion_calidad": "No fue posible evaluar la calidad comunicativa por falta de prompt.",
+                "elementos_faltantes": []
             })
             print(f"✅ Procesado registro {idx + 1}")
             print(f"🧾 Final [{idx + 1}]: {json.dumps(base_out, ensure_ascii=False)}")
@@ -176,7 +189,16 @@ def _worker_un_registro(
 
         ALLOWED = {"comunicacion_cliente", "cambio_estado", "sin_cambio", "sin_clasificar", "comunicacion_interna"}
         intento = 0
+
+        # Variables base
         clasificacion, explicacion, confianza = "sin_clasificar", "no se pudo parsear salida LLM", 0.0
+        # Nuevos campos
+        explicacion_clasificacion = "no se pudo parsear salida LLM"
+        confianza_clasificacion = 0.0
+        calidad_comunicativa_score = 0
+        explicacion_calidad = "La salida no fue utilizable."
+        elementos_faltantes: List[str] = []
+
         last_error_reason = ""
 
         while intento <= max_retries:
@@ -197,6 +219,7 @@ def _worker_un_registro(
                     print(f"📥 LLM RAW [{idx + 1}, intento {intento}] (error): {raw_content}")
                     raise ValueError(last_error_reason)
 
+                # Campos existentes
                 c = (llm_json.get("clasificacion") or "").strip()
                 e = (llm_json.get("explicacion") or "").strip() or "sin explicación"
                 conf_val = llm_json.get("confianza", 0.0)
@@ -213,11 +236,39 @@ def _worker_un_registro(
                     print(f"📥 LLM RAW [{idx + 1}, intento {intento}] (error): {raw_content}")
                     raise ValueError(last_error_reason)
 
+                # Asigna existentes
                 clasificacion, explicacion, confianza = c, e, max(0.0, min(1.0, conf_f))
+
+                # ➕ Lee nuevos campos con fallback a existentes
+                explicacion_clasificacion = (llm_json.get("explicacion_clasificacion") or e).strip()
+                try:
+                    confianza_clasificacion = float(llm_json.get("confianza_clasificacion", confianza))
+                except Exception:
+                    confianza_clasificacion = confianza
+                try:
+                    calidad_comunicativa_score = int(round(float(llm_json.get("calidad_comunicativa_score", 0))))
+                except Exception:
+                    calidad_comunicativa_score = 0
+
+                explicacion_calidad = (llm_json.get("explicacion_calidad") or "").strip()
+
+                elems = llm_json.get("elementos_faltantes") or []
+                if isinstance(elems, (str, int, float)):
+                    elementos_faltantes = [str(elems)]
+                elif isinstance(elems, list):
+                    elementos_faltantes = [str(x).strip() for x in elems if str(x).strip()]
+                else:
+                    elementos_faltantes = []
+
+                # Normaliza rangos
+                confianza_clasificacion = max(0.0, min(1.0, confianza_clasificacion))
+                calidad_comunicativa_score = max(0, min(100, calidad_comunicativa_score))
+                if not explicacion_calidad:
+                    explicacion_calidad = "Sin evaluación de calidad comunicativa."
+
                 break
 
             except Exception as e_llm:
-                # Log de error detallado por intento de LLM
                 _log_exception_detallado(e_llm, contexto=f"WORKER LLM idx={idx + 1} intento={intento}")
                 if not last_error_reason:
                     last_error_reason = str(e_llm)
@@ -228,23 +279,30 @@ def _worker_un_registro(
                 else:
                     print(f"⚠️ Reintentos agotados en idx {idx + 1}. Motivo: {last_error_reason}")
 
+        # Actualiza salida final (MISMO NIVEL, sin 'salida_modelo')
         base_out.update({
             "clasificacion": clasificacion,
             "explicacion": explicacion,
-            "confianza": confianza
+            "confianza": confianza,
+
+            # Nuevos campos
+            "explicacion_clasificacion": explicacion_clasificacion,
+            "confianza_clasificacion": confianza_clasificacion,
+            "calidad_comunicativa_score": calidad_comunicativa_score,
+            "explicacion_calidad": explicacion_calidad,
+            "elementos_faltantes": elementos_faltantes
         })
+
         print(f"✅ Procesado registro {idx + 1}")
         print(f"🧾 Final [{idx + 1}]: {json.dumps(base_out, ensure_ascii=False)}")
         return base_out
 
     except Exception as e:
-        # Captura de error mejorada en el worker
         _log_exception_detallado(e, contexto=f"WORKER idx={idx + 1}")
         base_out = {
             # Primero los solicitados, también en errores
             "NIT TALLER": None,
             "NOMBRE TALLER": None,
-
             "numero_aviso": None,
             "numero_siniestro": None,
             "placa": None,
@@ -252,9 +310,19 @@ def _worker_un_registro(
             "usuario": None,
             "rol_analista": None,
             "observacion": None,
+
+            # Campos originales
             "clasificacion": "sin_clasificar",
             "explicacion": f"{type(e).__name__}: {e}",
             "confianza": 0.0,
+
+            # ➕ Campos nuevos
+            "explicacion_clasificacion": f"{type(e).__name__}: {e}",
+            "confianza_clasificacion": 0.0,
+            "calidad_comunicativa_score": 0,
+            "explicacion_calidad": "No fue posible evaluar la calidad por excepción en el worker.",
+            "elementos_faltantes": [],
+
             "idx": idx
         }
         print(f"🧾 Final [{idx + 1}]: {json.dumps(base_out, ensure_ascii=False)}")
@@ -305,7 +373,6 @@ def procesar_observacion_individual(
             try:
                 res = future.result()
             except Exception as e:
-                # Captura de error mejorada en el orquestador
                 _log_exception_detallado(e, contexto=f"ORQUESTADOR idx={idx}")
                 res = {
                     # Mantener orden con NIT/NOMBRE primero también aquí
@@ -319,9 +386,19 @@ def procesar_observacion_individual(
                     "usuario": None,
                     "rol_analista": None,
                     "observacion": None,
+
+                    # Campos originales
                     "clasificacion": "sin_clasificar",
                     "explicacion": f"{type(e).__name__}: {e}",
                     "confianza": 0.0,
+
+                    # ➕ Campos nuevos
+                    "explicacion_clasificacion": f"{type(e).__name__}: {e}",
+                    "confianza_clasificacion": 0.0,
+                    "calidad_comunicativa_score": 0,
+                    "explicacion_calidad": "No fue posible evaluar la calidad por excepción en el orquestador.",
+                    "elementos_faltantes": [],
+
                     "idx": idx
                 }
 

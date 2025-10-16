@@ -3,9 +3,6 @@ from __future__ import annotations
 import polars as pl
 from typing import Dict, Any
 
-import polars as pl
-from typing import Dict, Any
-
 
 def build_json_para_n8n_registro(df: pl.DataFrame, idx: int = 0) -> Dict[str, Any]:
     """

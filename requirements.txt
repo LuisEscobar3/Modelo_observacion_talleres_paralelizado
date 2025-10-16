@@ -1,0 +1,21 @@
+fastapi==0.110.0
+uvicorn[standard]
+polars==0.20.14
+pydantic==2.10.4
+httpx==0.27.0
+python-dotenv==1.0.1  # Solo si en un futuro deseas usar .env
+pytest==8.1.1
+requests
+langchain-core>=0.1.0
+langchain-experimental>=0.1.0
+psycopg2-binary>=2.9.9
+python-dotenv>=1.0.0
+transformers>=4.40.1
+pydantic>=2.7.0
+numpy>=2.0.0
+torch
+flax
+pydantic[email]
+uvicorn[standard]==0.30.6
+demjson3
+https://carlos.alberto.diaz@segurosbolivar.com:cmVmdGtuOjAxOjE3NzM1MTcyOTM6d0dLcmdIOEFaY0F2MHpZNEJCTGFZZkdRUUJ5@segurosbolivar.jfrog.io/artifactory/transversal-ia-langchain-python-lib-dev-virtual/ia_transversal_langchain_python_lib/2.6.3/ia_transversal_langchain_python_lib-2.6.3-py3-none-any.whl

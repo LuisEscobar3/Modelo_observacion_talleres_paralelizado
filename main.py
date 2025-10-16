@@ -4,7 +4,7 @@ import sys
 import time
 import dotenv
 from langchain.globals import set_debug
-from services.llm_manager import load_llms  # (no lo usamos aquí, se mantiene por compatibilidad)
+from services.llm_manager import load_llms
 from Functions.read_csv import read_csv_with_polars
 from Functions.Process_indibitual_observations import procesar_observacion_individual
 

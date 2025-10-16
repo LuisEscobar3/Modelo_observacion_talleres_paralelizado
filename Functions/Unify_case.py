@@ -209,6 +209,7 @@ if __name__ == "__main__":
         chunksize=0,  # 0 => nº de lotes = nº de CPUs
     )
     with open("auditoria_calidad.json", "w", encoding="utf-8") as f:
+        # noinspection PyTypeChecker
         json.dump(resultado_json, f, ensure_ascii=False, indent=2)
     print(nfilas)
     # Para guardar:
