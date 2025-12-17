@@ -1,24 +1,22 @@
-# Imagen base
-FROM python:3.11-slim
+# Usa una imagen base ligera de Python
+FROM python:3.10-slim
 
-# Evita .pyc y asegura logs inmediatos
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
-# Cloud Run suele usar PORT; dejamos default 8080 para local
-ENV PORT=8080
-
+# Establece el directorio de trabajo
 WORKDIR /app
 
-# Dependencias
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# Copia los requerimientos e instálalos
+COPY requirements.txt .
+# Instalamos las dependencias.
+# Nota: Si tienes dependencias que requieren compilación (como psycopg2 no-binary),
+# podrías necesitar instalar gcc y otras librerías antes de pip install.
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copia el código
-COPY . /app
+# Copia el resto del código
+COPY . .
 
-# (Opcional) Documentativo. Cloud Run igual enruta por $PORT
+# Expone el puerto 8080 (Puerto estándar de Cloud Run)
 EXPOSE 8080
 
-# IMPORTANTE: usamos sh -c para que $PORT se expanda
-CMD ["sh", "-c", "python -m uvicorn mainAPI:app --host 0.0.0.0 --port $PORT"]
+# Ejecuta la aplicación usando Uvicorn directamente para producción.
+# Usamos main_firebase:app ya que es donde está definida tu instancia de FastAPI.
+CMD ["uvicorn", "mainAPI:app", "--host", "0.0.0.0", "--port", "8080"]
