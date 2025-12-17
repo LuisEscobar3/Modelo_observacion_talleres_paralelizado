@@ -1,3 +1,6 @@
+langchain-core
+langchain-experimental
+langchain
 fastapi
 uvicorn[standard]
 polars
@@ -6,9 +9,6 @@ httpx
 python-dotenv
 pytest
 requests
-langchain-core
-langchain-experimental
-langchain
 psycopg2-binary
 pydantic
 numpy
