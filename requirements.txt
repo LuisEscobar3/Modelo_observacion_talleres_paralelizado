@@ -8,6 +8,7 @@ pytest
 requests
 langchain-core
 langchain-experimental
+langchain
 psycopg2-binary
 pydantic
 numpy
