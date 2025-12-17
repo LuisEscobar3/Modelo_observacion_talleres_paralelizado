@@ -14,7 +14,6 @@ from services.miscelaneous import load_prompts_generales
 
 # ========================================
 #   MODO DEBUG OPCIONAL
-#   (si quieres extra logs internos del parser)
 # ========================================
 DEBUG_LLM_JSON = os.getenv("DEBUG_LLM_JSON", "0") == "1"
 
@@ -47,10 +46,6 @@ def _coerce_scalar(v: Any) -> Any:
 def _parse_llm_json(raw: str) -> Optional[Dict[str, Any]]:
     """
     Intenta extraer un JSON válido desde el texto crudo del LLM.
-    - Limpia caracteres de control
-    - Quita backticks de bloques ```json
-    - Intenta parseo directo
-    - Si falla, recorta desde la primera '{' hasta la última '}'
     """
     if not isinstance(raw, str):
         if DEBUG_LLM_JSON:
@@ -82,11 +77,7 @@ def _parse_llm_json(raw: str) -> Optional[Dict[str, Any]]:
         except Exception as e:
             if DEBUG_LLM_JSON:
                 print(f"🧩 Parser: json.loads recortado falló → {e}", flush=True)
-                print(f"🧩 Fragmento analizado (primeros 500 chars):\n{fragment[:500]}\n--- FIN FRAG ---", flush=True)
-            return None
-
-    if DEBUG_LLM_JSON:
-        print("🧩 Parser: No se encontró JSON válido", flush=True)
+                return None
 
     return None
 
@@ -124,12 +115,11 @@ def _to_mapping(obj: Any) -> Dict[str, Any]:
         return obj
     if isinstance(obj, (list, tuple)):
         return {str(i): v for i, v in enumerate(obj)}
-    if isinstance(obj, set):
-        return {str(i): v for i, v in enumerate(sorted(list(obj), key=str))}
     return {"llm_raw": obj}
 
 
 def _safe_merge(a: Dict[str, Any], b: Any) -> Dict[str, Any]:
+    """Fusiona diccionarios de manera segura."""
     out = dict(a) if isinstance(a, dict) else {}
     out.update(_to_mapping(b))
     return out
@@ -160,14 +150,12 @@ def _build_observaciones_unidas_para_idx(df: pl.DataFrame, idx: int) -> Tuple[st
         "rol_analista": _coerce_scalar(row.get(col_rol)) if col_rol else None,
     }
 
-    # Si ya existe una columna de observaciones unidas, úsala
     col_obs_unidas = _find_col(df, ["observaciones unidas", "observaciones_unidas"])
     if col_obs_unidas and row.get(col_obs_unidas):
         s = str(_coerce_scalar(row[col_obs_unidas])).strip()
         total = len([p for p in s.split("|") if p.strip()])
         return (s, total, meta)
 
-    # Si no, reconstruir a partir de todas las filas del mismo caso
     key_col, key_val = None, None
     for c, v in [
         (col_aviso, meta["numero_aviso"]),
@@ -200,15 +188,64 @@ def _build_observaciones_unidas_para_idx(df: pl.DataFrame, idx: int) -> Tuple[st
 
 
 # ========================================
+#      HELPER: EJECUTAR LLM (GENÉRICO)
+# ========================================
+
+def _ejecutar_llm_con_retry(
+        cliente_llm: Any,
+        system_prompt: str,
+        human_content: str,
+        idx: int,
+        step_name: str,
+        max_retries: int = 2,
+        backoff_sec: float = 2.0
+) -> Dict[str, Any]:
+    """
+    Ejecuta una llamada al LLM con lógica de reintentos y parseo de JSON.
+    Se extrajo del worker para poder reutilizarla en Prompt A y Prompt B.
+    """
+    msgs = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=human_content)
+    ]
+
+    for attempt in range(max_retries + 1):
+        try:
+            if attempt > 0:
+                print(f"🔁 [{step_name}] Reintento {attempt} idx={idx + 1}", flush=True)
+                time.sleep(backoff_sec)
+
+            resp = cliente_llm.invoke(msgs)
+            raw = resp.content if hasattr(resp, "content") else str(resp)
+
+            # Debug logs
+            if DEBUG_LLM_JSON:
+                print(f"--- RAW {step_name} idx={idx + 1} attempt={attempt} ---")
+                print(str(raw)[:200] + "...", flush=True)
+
+            parsed = _parse_llm_json(raw)
+            if isinstance(parsed, dict):
+                return parsed  # Éxito
+
+            print(f"⚠️ [{step_name}] idx={idx + 1}: Salida no JSON válido", flush=True)
+
+        except Exception as e:
+            print(f"❌ [{step_name}] idx={idx + 1}: Excepción {e}", flush=True)
+
+    # Si falla todo tras reintentos
+    return {f"error_{step_name}": "Fallo ejecución LLM o parseo JSON"}
+
+
+# ========================================
 #               WORKER
 # ========================================
 
 def _worker_un_caso(
-    df: pl.DataFrame,
-    idx: int,
-    cliente_llm: Any,
-    max_retries: int = 2,
-    backoff_sec: float = 2.0
+        df: pl.DataFrame,
+        idx: int,
+        cliente_llm: Any,
+        max_retries: int = 2,
+        backoff_sec: float = 2.0
 ) -> Dict[str, Any]:
     try:
         print(f"▶️  Worker start idx={idx + 1}/{df.height}", flush=True)
@@ -219,67 +256,52 @@ def _worker_un_caso(
             print(f"⚪ idx={idx + 1}: sin observaciones", flush=True)
             return {**meta, "resumen_general": "sin datos", "total_eventos": 0}
 
-        system_prompt = load_prompts_generales("observaciones_calidad_prompt")
+        # Preparamos el contenido Human una sola vez (es el mismo para ambos prompts)
         entrada = {**meta, "total_eventos": total_evt, "observaciones_unidas": obs_unidas}
-
         human_content = f"<ENTRADA>\n{json.dumps(entrada, ensure_ascii=False, indent=2)}\n</ENTRADA>"
 
-        llm_json: Optional[Dict[str, Any]] = None
+        # ---------------------------------------------------------
+        # 1. CARGA DE PROMPTS DESDE ARCHIVO EXTERNO
+        #    Usamos las claves definidas en tu YAML anterior.
+        # ---------------------------------------------------------
+        try:
+            # Prompt A: Alertas, OPRE, Desistimiento
+            prompt_a_sys = load_prompts_generales("sistema_alertas_riesgos_prompt")
 
-        for attempt in range(max_retries + 1):
-            try:
-                if attempt > 0:
-                    print(f"🔁 Reintento {attempt} idx={idx + 1}", flush=True)
-                    time.sleep(backoff_sec)
+            # Prompt B: Calidad y Estadísticas
+            prompt_b_sys = load_prompts_generales("auditoria_calidad_metricas_prompt")
+        except Exception as e:
+            print(f"❌ Error cargando prompts externos: {e}", flush=True)
+            return {**entrada, "error": "No se pudieron cargar los prompts desde archivo"}
 
-                msgs = [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=human_content)
-                ]
+        # ---------------------------------------------------------
+        # 2. EJECUCIÓN SECUENCIAL (PROMPT A)
+        # ---------------------------------------------------------
+        json_a = _ejecutar_llm_con_retry(
+            cliente_llm, prompt_a_sys, human_content, idx, "PROMPT_A", max_retries, backoff_sec
+        )
 
-                resp = cliente_llm.invoke(msgs)
-                raw = resp.content if hasattr(resp, "content") else str(resp)
+        # ---------------------------------------------------------
+        # 3. EJECUCIÓN SECUENCIAL (PROMPT B)
+        # ---------------------------------------------------------
+        json_b = _ejecutar_llm_con_retry(
+            cliente_llm, prompt_b_sys, human_content, idx, "PROMPT_B", max_retries, backoff_sec
+        )
 
-                # ======================================================
-                #  🔥 PRINT FIJO DEL RAW DEL LLM ANTES DE PARSEAR
-                # ======================================================
-                print(f"\n\n===== RAW LLM idx={idx + 1} (attempt={attempt}) =====", flush=True)
-                try:
-                    # Evitamos romper logs por caracteres raros
-                    safe_raw = unicodedata.normalize("NFKC", str(raw))
-                except Exception:
-                    safe_raw = str(raw)
-                print(safe_raw, flush=True)
-                print("===== FIN RAW =====\n\n", flush=True)
-                # ======================================================
+        # ---------------------------------------------------------
+        # 4. FUSIÓN DE RESULTADOS
+        # ---------------------------------------------------------
+        # Unimos metadata original + resultado A + resultado B
+        resultado_final = dict(entrada)
+        resultado_final = _safe_merge(resultado_final, json_a)
+        resultado_final = _safe_merge(resultado_final, json_b)
 
-                parsed = _parse_llm_json(raw)
-
-                if isinstance(parsed, dict):
-                    llm_json = parsed
-                    print(f"✅ idx={idx + 1}: LLM OK", flush=True)
-                    break
-                else:
-                    print(f"⚠️ idx={idx + 1}: salida no JSON", flush=True)
-
-                    if DEBUG_LLM_JSON:
-                        cleaned = unicodedata.normalize('NFKC', str(raw))
-                        cleaned = re.sub(r'[\x00-\x1f\x7f]', '', cleaned).strip()
-                        print(f"🧾 Limpio idx={idx + 1} (primeros 800 chars):\n{cleaned[:800]}\n--- FIN LIMPIO ---", flush=True)
-
-            except Exception as e:
-                print(f"❌ idx={idx + 1}: excepción {e}", flush=True)
-
-                if attempt == max_retries:
-                    llm_json = {"resumen_general": "error", "observaciones": [str(e)]}
-
-        print(f"🏁 Worker end idx={idx + 1}", flush=True)
-
-        return _safe_merge(entrada, llm_json)
+        print(f"🏁 Worker end idx={idx + 1} (A+B completados)", flush=True)
+        return resultado_final
 
     except Exception as e:
-        print(f"❌ [WORKER idx={idx + 1}] {e}", flush=True)
-        return {"resumen_general": "error", "observaciones": [str(e)]}
+        print(f"❌ [WORKER CRITICAL idx={idx + 1}] {e}", flush=True)
+        return {"resumen_general": "error_critico_worker", "observaciones": [str(e)]}
 
 
 # ========================================
@@ -287,18 +309,17 @@ def _worker_un_caso(
 # ========================================
 
 def procesar_calidad_por_caso(
-    df_casos: pl.DataFrame,
-    prompt_sistema: str,
-    cliente_llm: Any,
-    max_workers: Optional[int] = 0,
-    chunksize: Optional[int] = 0
+        df_casos: pl.DataFrame,
+        # prompt_sistema: str,  <-- YA NO SE USA, se cargan internamente A y B
+        cliente_llm: Any,
+        max_workers: Optional[int] = 0,
+        chunksize: Optional[int] = 0
 ) -> Dict[str, List[Dict[str, Any]]]:
-
     if df_casos is None or df_casos.height == 0:
         print("⚪ DataFrame vacío", flush=True)
         return {"registros": []}
 
-    print("🚀 Procesando...", flush=True)
+    print("🚀 Procesando (Doble Prompt: Alertas + Calidad)...", flush=True)
 
     workers = max_workers if max_workers and max_workers > 0 else (os.cpu_count() or 1)
 
@@ -316,10 +337,11 @@ def procesar_calidad_por_caso(
             try:
                 resultados[idx] = future.result()
                 done += 1
-                print(f"📦 Progreso: {done}/{df_casos.height}", flush=True)
+                if done % 5 == 0:  # Log menos ruidoso
+                    print(f"📦 Progreso: {done}/{df_casos.height}", flush=True)
             except Exception as e:
                 print(f"❌ Error orquestador idx={idx}: {e}", flush=True)
-                resultados[idx] = {"resumen_general": "error", "observaciones": [str(e)]}
+                resultados[idx] = {"resumen_general": "error_thread", "observaciones": [str(e)]}
 
     print("✅ Orquestación completada", flush=True)
     return {"registros": [r for r in resultados if r is not None]}

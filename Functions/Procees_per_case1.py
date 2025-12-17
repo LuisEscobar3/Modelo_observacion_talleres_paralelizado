@@ -13,8 +13,7 @@ from langchain.schema import SystemMessage, HumanMessage
 from services.miscelaneous import load_prompts_generales
 
 # ========================================
-#   MODO DEBUG OPCIONAL
-#   (si quieres extra logs internos del parser)
+#   MODO DEBUG PARA VER RESPUESTAS COMPLETAS DEL LLM
 # ========================================
 DEBUG_LLM_JSON = os.getenv("DEBUG_LLM_JSON", "0") == "1"
 
@@ -45,22 +44,16 @@ def _coerce_scalar(v: Any) -> Any:
 
 
 def _parse_llm_json(raw: str) -> Optional[Dict[str, Any]]:
-    """
-    Intenta extraer un JSON válido desde el texto crudo del LLM.
-    - Limpia caracteres de control
-    - Quita backticks de bloques ```json
-    - Intenta parseo directo
-    - Si falla, recorta desde la primera '{' hasta la última '}'
-    """
     if not isinstance(raw, str):
         if DEBUG_LLM_JSON:
-            print(f"🧩 _parse_llm_json: raw no es str → {type(raw)}", flush=True)
+            print(f"_parse_llm_json: raw no es str → {type(raw)}", flush=True)
         return None
 
+    # Limpieza básica de control chars
     txt = unicodedata.normalize('NFKC', raw)
     txt = re.sub(r'[\x00-\x1f\x7f]', '', txt).strip()
 
-    # Si viene en bloque ```...```
+    # Si viene envuelto en ``` ```
     m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", txt, re.IGNORECASE)
     if m:
         txt = m.group(1).strip()
@@ -70,9 +63,9 @@ def _parse_llm_json(raw: str) -> Optional[Dict[str, Any]]:
         return json.loads(txt)
     except Exception as e:
         if DEBUG_LLM_JSON:
-            print(f"🧩 Parser: json.loads directo falló → {e}", flush=True)
+            print(f"Parser: json.loads directo falló → {e}", flush=True)
 
-    # Intento recortando desde primera llave
+    # Intento recortando desde la primera llave
     start = txt.find("{")
     end = txt.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -81,12 +74,12 @@ def _parse_llm_json(raw: str) -> Optional[Dict[str, Any]]:
             return json.loads(fragment)
         except Exception as e:
             if DEBUG_LLM_JSON:
-                print(f"🧩 Parser: json.loads recortado falló → {e}", flush=True)
-                print(f"🧩 Fragmento analizado (primeros 500 chars):\n{fragment[:500]}\n--- FIN FRAG ---", flush=True)
+                print(f"Parser: json.loads recortado falló → {e}", flush=True)
+                print(f"Fragmento analizado (primeros 500 chars):\n{fragment[:500]}\n--- FIN FRAG ---", flush=True)
             return None
 
     if DEBUG_LLM_JSON:
-        print("🧩 Parser: No se encontró JSON válido", flush=True)
+        print("Parser: No se encontró JSON válido", flush=True)
 
     return None
 
@@ -160,19 +153,18 @@ def _build_observaciones_unidas_para_idx(df: pl.DataFrame, idx: int) -> Tuple[st
         "rol_analista": _coerce_scalar(row.get(col_rol)) if col_rol else None,
     }
 
-    # Si ya existe una columna de observaciones unidas, úsala
     col_obs_unidas = _find_col(df, ["observaciones unidas", "observaciones_unidas"])
     if col_obs_unidas and row.get(col_obs_unidas):
         s = str(_coerce_scalar(row[col_obs_unidas])).strip()
         total = len([p for p in s.split("|") if p.strip()])
         return (s, total, meta)
 
-    # Si no, reconstruir a partir de todas las filas del mismo caso
+    # Si no existe columna de observaciones_unidas, armarla desde detalle
     key_col, key_val = None, None
     for c, v in [
         (col_aviso, meta["numero_aviso"]),
         (col_sini, meta["numero_siniestro"]),
-        (col_placa, meta["placa"]),
+        (col_placa, meta["placa"])
     ]:
         if c and v:
             key_col, key_val = c, v
@@ -184,16 +176,17 @@ def _build_observaciones_unidas_para_idx(df: pl.DataFrame, idx: int) -> Tuple[st
         col_fecha = _find_col(df, ["fecha observacion", "fecha"])
         col_obs = _find_col(df, ["observacion", "observaciones"])
 
-        tmp = []
-        for i in range(sub.height):
-            r = sub.row(i, named=True)
-            f = r.get(col_fecha)
-            t = _sanitize_obs_text(r.get(col_obs))
-            if t:
-                tmp.append((f or "0000-00-00", t))
+        if col_obs:
+            tmp = []
+            for i in range(sub.height):
+                r = sub.row(i, named=True)
+                f = r.get(col_fecha) if col_fecha else None
+                t = _sanitize_obs_text(r.get(col_obs))
+                if t:
+                    tmp.append((f or "0000-00-00", t))
 
-        tmp.sort(key=lambda x: x[0])
-        piezas = [f"{f} - {t}".strip(" -") for f, t in tmp]
+            tmp.sort(key=lambda x: x[0])
+            piezas = [f"{f} - {t}".strip(" -") for f, t in tmp]
 
     obs_unidas = " | ".join(piezas)
     return (obs_unidas, len(piezas), meta)
@@ -206,6 +199,7 @@ def _build_observaciones_unidas_para_idx(df: pl.DataFrame, idx: int) -> Tuple[st
 def _worker_un_caso(
     df: pl.DataFrame,
     idx: int,
+    system_prompt: str,
     cliente_llm: Any,
     max_retries: int = 2,
     backoff_sec: float = 2.0
@@ -217,11 +211,20 @@ def _worker_un_caso(
 
         if not obs_unidas:
             print(f"⚪ idx={idx + 1}: sin observaciones", flush=True)
-            return {**meta, "resumen_general": "sin datos", "total_eventos": 0}
+            # Alineado con el nuevo esquema (resumen_ejecutivo)
+            return {
+                **meta,
+                "total_eventos": 0,
+                "resumen_ejecutivo": "sin datos",
+                "alertas_comunicacion_cliente": {},
+                "evaluacion_calidad_observaciones": {},
+                "evidencias_representativas": [],
+                "recomendaciones_priorizadas": [],
+                "estadisticas_caso": {},
+                "metadata_analisis": {}
+            }
 
-        system_prompt = load_prompts_generales("observaciones_calidad_prompt")
         entrada = {**meta, "total_eventos": total_evt, "observaciones_unidas": obs_unidas}
-
         human_content = f"<ENTRADA>\n{json.dumps(entrada, ensure_ascii=False, indent=2)}\n</ENTRADA>"
 
         llm_json: Optional[Dict[str, Any]] = None
@@ -240,18 +243,8 @@ def _worker_un_caso(
                 resp = cliente_llm.invoke(msgs)
                 raw = resp.content if hasattr(resp, "content") else str(resp)
 
-                # ======================================================
-                #  🔥 PRINT FIJO DEL RAW DEL LLM ANTES DE PARSEAR
-                # ======================================================
-                print(f"\n\n===== RAW LLM idx={idx + 1} (attempt={attempt}) =====", flush=True)
-                try:
-                    # Evitamos romper logs por caracteres raros
-                    safe_raw = unicodedata.normalize("NFKC", str(raw))
-                except Exception:
-                    safe_raw = str(raw)
-                print(safe_raw, flush=True)
-                print("===== FIN RAW =====\n\n", flush=True)
-                # ======================================================
+                if DEBUG_LLM_JSON:
+                    print(f"\n📨 RAW LLM idx={idx + 1} (primeros 800 chars):\n{raw[:800]}\n--- FIN RAW ---", flush=True)
 
                 parsed = _parse_llm_json(raw)
 
@@ -261,25 +254,51 @@ def _worker_un_caso(
                     break
                 else:
                     print(f"⚠️ idx={idx + 1}: salida no JSON", flush=True)
-
                     if DEBUG_LLM_JSON:
-                        cleaned = unicodedata.normalize('NFKC', str(raw))
+                        cleaned = unicodedata.normalize('NFKC', raw)
                         cleaned = re.sub(r'[\x00-\x1f\x7f]', '', cleaned).strip()
                         print(f"🧾 Limpio idx={idx + 1} (primeros 800 chars):\n{cleaned[:800]}\n--- FIN LIMPIO ---", flush=True)
 
             except Exception as e:
                 print(f"❌ idx={idx + 1}: excepción {e}", flush=True)
-
                 if attempt == max_retries:
-                    llm_json = {"resumen_general": "error", "observaciones": [str(e)]}
+                    # Fallback de error alineado al nuevo esquema (resumen_ejecutivo)
+                    llm_json = {
+                        "resumen_ejecutivo": "error en invocacion LLM",
+                        "metadata_analisis": {
+                            "nivel_confianza": "baja",
+                            "factores_confianza": f"Excepcion en LLM: {e}",
+                            "limitaciones": ["Fallo en la llamada al modelo de lenguaje"],
+                            "total_eventos_procesados": int(total_evt)
+                        }
+                    }
+
+        # Si tras todos los intentos sigue sin JSON, generamos uno mínimo de error
+        if llm_json is None:
+            llm_json = {
+                "resumen_ejecutivo": "error: el modelo no devolvio JSON valido",
+                "metadata_analisis": {
+                    "nivel_confianza": "baja",
+                    "factores_confianza": "No se pudo parsear la salida del modelo a JSON.",
+                    "limitaciones": ["Salida del modelo fuera del formato JSON esperado"],
+                    "total_eventos_procesados": int(total_evt)
+                }
+            }
 
         print(f"🏁 Worker end idx={idx + 1}", flush=True)
-
         return _safe_merge(entrada, llm_json)
 
     except Exception as e:
         print(f"❌ [WORKER idx={idx + 1}] {e}", flush=True)
-        return {"resumen_general": "error", "observaciones": [str(e)]}
+        return {
+            "resumen_ejecutivo": "error inesperado en worker",
+            "metadata_analisis": {
+                "nivel_confianza": "baja",
+                "factores_confianza": f"Excepcion general en worker: {e}",
+                "limitaciones": ["Error interno en procesamiento del caso"],
+                "total_eventos_procesados": 0
+            }
+        }
 
 
 # ========================================
@@ -287,18 +306,23 @@ def _worker_un_caso(
 # ========================================
 
 def procesar_calidad_por_caso(
-    df_casos: pl.DataFrame,
-    prompt_sistema: str,
-    cliente_llm: Any,
-    max_workers: Optional[int] = 0,
-    chunksize: Optional[int] = 0
-) -> Dict[str, List[Dict[str, Any]]]:
+        df_casos: pl.DataFrame,
+        prompt_sistema: str,
+        cliente_llm: Any,
+        max_workers: Optional[int] = 0,
+        chunksize: Optional[int] = 0) -> Dict[str, List[Dict[str, Any]]]:
 
     if df_casos is None or df_casos.height == 0:
         print("⚪ DataFrame vacío", flush=True)
         return {"registros": []}
 
     print("🚀 Procesando...", flush=True)
+
+    # Si no se pasó prompt_sistema, cargar desde repositorio de prompts
+    if not prompt_sistema:
+        system_prompt = load_prompts_generales("observaciones_calidad_prompt")
+    else:
+        system_prompt = prompt_sistema
 
     workers = max_workers if max_workers and max_workers > 0 else (os.cpu_count() or 1)
 
@@ -307,7 +331,7 @@ def procesar_calidad_por_caso(
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(_worker_un_caso, df_casos, i, cliente_llm): i
+            executor.submit(_worker_un_caso, df_casos, i, system_prompt, cliente_llm): i
             for i in range(df_casos.height)
         }
 
@@ -319,7 +343,15 @@ def procesar_calidad_por_caso(
                 print(f"📦 Progreso: {done}/{df_casos.height}", flush=True)
             except Exception as e:
                 print(f"❌ Error orquestador idx={idx}: {e}", flush=True)
-                resultados[idx] = {"resumen_general": "error", "observaciones": [str(e)]}
+                resultados[idx] = {
+                    "resumen_ejecutivo": "error en orquestador",
+                    "metadata_analisis": {
+                        "nivel_confianza": "baja",
+                        "factores_confianza": f"Excepcion en orquestador: {e}",
+                        "limitaciones": ["Error interno en procesamiento global"],
+                        "total_eventos_procesados": 0
+                    }
+                }
 
     print("✅ Orquestación completada", flush=True)
     return {"registros": [r for r in resultados if r is not None]}

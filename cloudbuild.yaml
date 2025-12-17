@@ -1,0 +1,25 @@
+steps:
+  # Build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [ 'build', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/mi-repo/modelo-observacion-talleres:$COMMIT_SHA', '.' ]
+
+  # Push the container image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [ 'push', 'us-central1-docker.pkg.dev/$PROJECT_ID/mi-repo/modelo-observacion-talleres:$COMMIT_SHA' ]
+
+  # Deploy container image to Cloud Run
+  - id: "deploy cloud run"
+    name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: /bin/bash
+    args:
+      - "-c"
+      - |
+        gcloud run deploy modelo-observacion-talleres-service \
+        --region us-central1 \
+        --image us-central1-docker.pkg.dev/$PROJECT_ID/mi-repo/modelo-observacion-talleres:$COMMIT_SHA \
+        --no-allow-unauthenticated \
+        --port 8080 \
+        --labels billing-tag=ia-mv-modelo-observacion-talleres, vp=patrimoniales,team=movildiad,tipo=proyecto
+
+images:
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/mi-repo/modelo-observacion-talleres:$COMMIT_SHA'

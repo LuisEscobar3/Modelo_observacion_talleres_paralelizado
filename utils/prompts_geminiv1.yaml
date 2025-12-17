@@ -237,35 +237,7 @@ observaciones_calidad_prompt: |
       - Verifica que todas las justificaciones estén respaldadas por evidencia
   </PROCESO_ANALITICO_SECUENCIAL>
 
-  <GUIA_DE_EVALUACION_DETALLADA (RUBRICA)>
 
-  **1. Informatividad (Ponderación: 30%)**: Mide si cada actualización aporta valor nuevo.
-    - **Score Alto (80-100)**: Predominan actualizaciones con información nueva y relevante (cambios de estado, resultados, confirmaciones).
-    - **Score Medio (40-70)**: Mezcla de actualizaciones valiosas con varias notas de "sin novedad" o "continúa en proceso".
-    - **Score Bajo (0-30)**: La mayoría de las observaciones son repetitivas ("sin cambios") sin aportar contexto nuevo sobre la causa de la espera.
-
-  **2. Oportunidad (Ponderación: 25%)**: Mide la frecuencia y proactividad de la comunicación.
-    - **Score Alto (80-100)**: Actualizaciones consistentes cada 1-2 días hábiles. Brechas largas justificadas.
-    - **Score Medio (40-70)**: Brechas promedio de 3-5 días hábiles. Comunicación más reactiva.
-    - **Score Bajo (0-30)**: Brechas de más de 5 días hábiles sin justificación. Largos silencios.
-
-  **3. Orientación (Ponderación: 20%)**: Mide si se explican los "porqués", siguientes pasos y plazos.
-    - **Score Alto (80-100)**: Las notas explican estado, razones de demoras (ej. "esperando repuesto, ETA 5 días") y siguientes pasos.
-    - **Score Medio (40-70)**: Se menciona el estado, pero falta contexto sobre implicaciones o plazos.
-    - **Score Bajo (0-30)**: Notas crípticas y técnicas sin explicación. No se gestionan las expectativas.
-
-  **4. Claridad (Ponderación: 15%)**: Mide si el lenguaje es específico y fácil de entender.
-    - **Score Alto (80-100)**: Mensajes claros y específicos (ej. "Finalizó pintura, inicia armado. Estimado: 2 días.").
-    - **Score Medio (40-70)**: Mensajes funcionales pero genéricos (ej. "en proceso", "pendiente").
-    - **Score Bajo (0-30)**: Mensajes vagos, incompletos o con jerga técnica no explicada.
-
-  **5. Consistencia (Ponderación: 10%)**: Mide si el historial es coherente y lógico.
-    - **Score Alto (80-100)**: El flujo de observaciones sigue una secuencia lógica de reparación sin contradicciones.
-    - **Score Medio (40-70)**: Pequeñas inconsistencias o saltos en el proceso no explicados.
-    - **Score Bajo (0-30)**: Contradicciones evidentes (ej. una pieza llega antes de ser pedida).
-
-  **Fórmula Score Final**: `round(0.30*Informatividad + 0.25*Oportunidad + 0.20*Orientación + 0.15*Claridad + 0.10*Consistencia)`
-  </GUIA_DE_EVALUACION_DETALLADA>
   {
     "numero_aviso": "{{$json.numero_aviso}}",
     "numero_siniestro": "{{$json.numero_siniestro}}",

@@ -7,7 +7,7 @@ from pathlib import Path
 
 def load_prompts_generales(prompt_type: str) -> str:
   prompt_files_path = Path(__file__).parent.parent / "utils"
-  prompt_file_name: str = "prompts_gemini.yaml"
+  prompt_file_name: str = "promts_geminiv4.yaml"
   prompt_file_path = str(prompt_files_path / prompt_file_name)
   with open(prompt_file_path, "r", encoding="utf-8") as file:
     prompts_variables = yaml.safe_load(file)

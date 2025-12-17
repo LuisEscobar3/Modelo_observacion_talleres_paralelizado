@@ -1,30 +1,22 @@
 import polars as pl
 from typing import Optional
 
-
 def read_csv_with_polars(file_path: str) -> Optional[pl.DataFrame]:
     """
-    Lee un archivo CSV de forma eficiente usando la API "lazy" de Polars.
-
-    Esta aproximación es ideal para archivos grandes, ya que Polars primero
-    escanea el archivo para construir un plan de ejecución optimizado y solo
-
-    carga los datos en memoria al final con el comando `.collect()`.
-
-    Args:
-        file_path: La ruta al archivo CSV que se va a leer.
-
-    Returns:
-        Un DataFrame de Polars con el contenido del archivo, o None si el
-        archivo no se encuentra o ocurre un error de lectura.
+    Lee un CSV normal con Polars y devuelve todo el DataFrame (sin filtros ni límites).
     """
     try:
-        df = pl.scan_csv(file_path).collect()
+        df = pl.read_csv(file_path)
+
+        if "NOMBRE TALLER" not in df.columns:
+            print("❌ La columna 'NOMBRE TALLER' no existe en el archivo.")
+            return None
+
         return df
+
     except FileNotFoundError as e:
         print(f"Archivo no encontrado: {e}")
         return None
     except Exception as e:
-        # Captura otros posibles errores de Polars durante la lectura/parseo
-        print(f"Ocurrió un error al leer/parsing con Polars: {e}")
+        print(f"Ocurrió un error al leer con Polars: {e}")
         return None

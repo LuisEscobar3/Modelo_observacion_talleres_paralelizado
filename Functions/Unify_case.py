@@ -8,7 +8,7 @@ from pathlib import Path
 from langchain.globals import set_debug
 
 from Functions.Procees_per_case_patched import procesar_calidad_por_caso
-from Procees_per_case import procesar_calidad_por_caso
+from Procees_per_case2 import procesar_calidad_por_caso
 # from Procees_per_case_patched import procesar_calidad_por_caso
 from services.llm_manager import load_llms
 
@@ -203,7 +203,7 @@ if __name__ == "__main__":
     print("dsadfaFSAFAFS")
     resultado_json = procesar_calidad_por_caso(
         df_casos=df_casos,
-        prompt_sistema="",  # no se usa aquí, se deja por compatibilidad
+        #prompt_sistema="",  # no se usa aquí, se deja por compatibilidad
         cliente_llm=gemini,  # tu cliente LLM
         max_workers=0,  # 0 => usa todos los CPUs
         chunksize=0,  # 0 => nº de lotes = nº de CPUs
