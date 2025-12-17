@@ -1,6 +1,7 @@
 langchain-core
 langchain-experimental
 langchain
+python-multipart
 fastapi
 uvicorn[standard]
 polars
