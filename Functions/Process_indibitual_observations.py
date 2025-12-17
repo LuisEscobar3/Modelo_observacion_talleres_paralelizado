@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import polars as pl
-from langchain.schema import SystemMessage, HumanMessage
+from langchain_core.schema import SystemMessage, HumanMessage
 
 # === Importa tus funciones reales ===
 from config.Config_bd import create_connection                # Debe devolver conexión psycopg2
