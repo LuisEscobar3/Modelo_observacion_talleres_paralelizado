@@ -31,7 +31,8 @@ import polars as pl
 from langchain_core.messages import SystemMessage, HumanMessage
 
 # === Importa tus funciones reales ===
-from config.Config_bd import create_connection                # Debe devolver conexión psycopg2
+from config.Config_bd import create_connection
+from config.Config_bd import insertar_clasificacion# Debe devolver conexión psycopg2
 from services.miscelaneous import load_prompts_generales  # Lee prompt desde tu YAML/servicio
 
 # ================================
@@ -234,11 +235,12 @@ def _worker_un_registro(
         usuario             = _coerce_scalar(registro.get("USUARIO"))
         rol_analista        = _coerce_scalar(registro.get("ROL ANALISTA"))
         observacion         = _coerce_scalar(registro.get("OBSERVACION"))
-
+        estado_aviso        = _coerce_scalar(registro.get("ESTADO AVISO"))
         base_out = {
             "nit_taller": nit_taller,
             "nombre_taller": nombre_taller,
             "numero_aviso": numero_aviso,
+            "estado_aviso":estado_aviso,
             "numero_siniestro": numero_siniestro,
             "placa": placa,
             "fecha_observacion": fecha_observacion,
@@ -261,7 +263,7 @@ def _worker_un_registro(
             dprint(f"⚠️ [{idx + 1}] Sin prompt. Taller='{nombre_taller}', Placa='{placa}'")
             return base_out
 
-        ALLOWED = {"comunicacion_cliente", "cambio_estado", "comunicacion_interna", "sin_cambio", "sin_clasificar"}
+        ALLOWED = {"comunicacion_cliente", "cambio_estado", "comunicacion_interna", "sin_cambio", "sin_clasificar","gestion_repuestos"}
 
         intento = 0
         last_error_reason = ""
@@ -286,11 +288,13 @@ def _worker_un_registro(
                 resp = cliente_llm.invoke(messages)
                 raw = resp.content if hasattr(resp, "content") else str(resp)
                 parsed = _parse_llm_json(raw)
+
                 if not parsed:
                     last_error_reason = "no se pudo parsear JSON"
                     raise ValueError(last_error_reason)
 
                 c = (parsed.get("clasificacion") or "").strip()
+                print(c)
                 if c not in ALLOWED:
                     last_error_reason = f"clasificacion inválida: {c!r}"
                     raise ValueError(last_error_reason)
@@ -348,6 +352,8 @@ def _worker_un_registro(
             "explicacion_calidad": explicacion_calidad,
             "elementos_faltantes": elementos_faltantes,
         })
+
+        insertar_clasificacion(base_out)
 
         print(f"✅ [{idx + 1}] Taller='{nombre_taller}', Placa='{placa}', Clasif='{clasificacion}', Conf={confianza:.2f}")
         return base_out
@@ -435,21 +441,6 @@ def procesar_observacion_individual(
     print(f"✅ Finalizado. Registros: {n} — Tiempo total: {total_elapsed:.2f} s")
 
     registros_finales: List[Dict[str, Any]] = [r for r in resultados if r is not None]
-
-    # === Persistencia en BD ===
-    try:
-        conn = create_connection()
-        if conn is None:
-            print("⚠️ create_connection() devolvió None. No se guardó en BD.")
-        else:
-            _ensure_table_exists(conn)
-            _insert_batch_pg(conn, registros_finales)
-            try:
-                conn.close()
-            except Exception:
-                pass
-    except Exception as e:
-        _log_exception_detallado(e, contexto="Persistencia BD")
 
     # Resumen útil (debug)
     try:

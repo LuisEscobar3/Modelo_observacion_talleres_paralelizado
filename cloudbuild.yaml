@@ -19,7 +19,7 @@ steps:
         --image us-central1-docker.pkg.dev/$PROJECT_ID/mi-repo/modelo-observacion-talleres:$COMMIT_SHA \
         --no-allow-unauthenticated \
         --port 8080 \
-        --labels billing-tag=ia-mv-modelo-observacion-talleres, vp=patrimoniales,team=movildiad,tipo=proyecto
+        --labels billing-tag=ia-mv-modelo-observacion-talleres, p=patrimoniales,team=movildiad,tipo=proyecto
 
 images:
   - 'us-central1-docker.pkg.dev/$PROJECT_ID/mi-repo/modelo-observacion-talleres:$COMMIT_SHA'

@@ -20,7 +20,7 @@ def main():
     os.environ["APP_ENV"] = os.environ.get("APP_ENV", "sbx")
 
     # Ruta de entrada (ajústala a tu entorno)
-    ruta_csv = r"C:\Users\1032497498\PycharmProjects\Modelo_observacion_talleres_paralelizado\datos_procesar.csv"
+    ruta_csv = r"C:\Users\1032497498\PycharmProjects\Modelo_observacion_talleres_paralelizado\utils\datos_procesar.csv"
     llms = load_llms()
     gemini = llms["gemini_pro"]
     # 1) Leer datos con Polars
@@ -32,7 +32,7 @@ def main():
     start_time = time.perf_counter()
 
     resultado_json = procesar_observacion_individual(
-        df_observacion=df_data,
+        df_observacion=df_data.head(20),
         prompt_sistema="",  # no se usa en esta función
         cliente_llm=gemini,  # no se usa en esta función
         max_workers=0,  # usa número de núcleos disponibles
@@ -45,7 +45,7 @@ def main():
     # 3) Mostrar resumen y guardar salida
     print(f"✅ Total registros procesados: {len(resultado_json.get('registros', []))}")
     print(f"⏱️ Tiempo de ejecución: {elapsed_time:.2f} segundos")
-
+    print(resultado_json)
     salida_json = r"C:\Users\1032497498\PycharmProjects\Modelo_observacion_talleres_paralelizado\salida_registros.json"
     with open(salida_json, "w", encoding="utf-8") as f:
         json.dump(resultado_json, f, ensure_ascii=False, indent=2)

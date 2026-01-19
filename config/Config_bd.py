@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import csv
@@ -317,6 +318,83 @@ def export_csv_to_postgres(
             print("🔌 Conexión cerrada correctamente.")
         except:
             pass
+
+def insertar_clasificacion(data: dict):
+    conn = create_connection()
+    if not conn:
+        return False
+
+    try:
+        cursor = conn.cursor()
+
+        # fecha_observacion: string -> timestamp
+        fecha_observacion = None
+        if data.get("fecha_observacion"):
+            fecha_observacion = datetime.strptime(
+                data["fecha_observacion"],
+                "%Y/%m/%d  %I:%M:%S %p"
+            )
+
+        sql = """
+        INSERT INTO public.clasificacion_onservacion (
+            nit_taller,
+            nombre_taller,
+            numero_aviso,
+            numero_siniestro,
+            placa,
+            fecha_observacion,
+            usuario,
+            rol_analista,
+            observacion,
+            clasificacion,
+            explicacion,
+            confianza,
+            explicacion_clasificacion,
+            confianza_clasificacion,
+            calidad_comunicativa_score,
+            explicacion_calidad,
+            elementos_faltantes,
+            estado_aviso
+        )
+        VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s, %s, %s
+        );
+        """
+
+        valores = (
+            data.get("nit_taller", ""),
+            data.get("nombre_taller", ""),
+            data.get("numero_aviso", 0),
+            data.get("numero_siniestro"),      # None = NULL
+            data.get("placa", ""),
+            fecha_observacion,
+            data.get("usuario", ""),
+            data.get("rol_analista", ""),
+            data.get("observacion", ""),
+            data.get("clasificacion", ""),
+            data.get("explicacion", ""),
+            data.get("confianza", 0),
+            data.get("explicacion_clasificacion", ""),
+            data.get("confianza_clasificacion", 0),
+            data.get("calidad_comunicativa_score", 0),
+            data.get("explicacion_calidad", ""),
+            json.dumps(data.get("elementos_faltantes", [])),
+            data.get("estado_aviso", "")
+        )
+
+        cursor.execute(sql, valores)
+        conn.commit()
+        return True
+
+    except Exception as e:
+        conn.rollback()
+        print("Error insert:", e)
+        return False
+
+    finally:
+        cursor.close()
+        conn.close()
 
 # =========================
 # EJECUCIÓN DIRECTA

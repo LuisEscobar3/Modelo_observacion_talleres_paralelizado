@@ -96,6 +96,5 @@ async def process_csv(
         "ok": True,
         "request_id": request_id,
         "elapsed_seconds": result["elapsed_seconds"],
-        "total_registros": len(result["resultado_json"].get("registros", [])),
-        "resultado": result["resultado_json"],
+        "total_registros": len(result["resultado_json"].get("registros", []))
     }

@@ -199,6 +199,7 @@ if __name__ == "__main__":
     df = cargar_json_a_polars(ruta)
     df_casos = unir_observaciones_por_caso(df, separador=" | ")  # o "\n"
     print(df_casos.head(10))
+    df_casos = df_casos.head(300)
     nfilas = len(df_casos)
     print("dsadfaFSAFAFS")
     resultado_json = procesar_calidad_por_caso(

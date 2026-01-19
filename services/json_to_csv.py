@@ -5,8 +5,8 @@ from typing import List, Dict, Any
 
 # Orden preferido de columnas (incluye los nuevos campos)
 PREFERRED_HEADERS = [
-    "NIT TALLER",
-    "NOMBRE TALLER",
+    "nit_taller",
+    "nombre_taller",
     "numero_aviso",
     "numero_siniestro",
     "placa",
@@ -17,13 +17,13 @@ PREFERRED_HEADERS = [
     "clasificacion",
     "explicacion",
     "confianza",
-    # 👇 nuevos campos solicitados
     "explicacion_clasificacion",
     "confianza_clasificacion",
     "calidad_comunicativa_score",
     "explicacion_calidad",
     "elementos_faltantes",
 ]
+
 
 
 def _string_sanitize(s: str) -> str:
