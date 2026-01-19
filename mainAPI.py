@@ -47,7 +47,7 @@ def upload_csv_to_gcs(file_bytes: bytes, request_id: str) -> str:
 
 
 # =========================
-# CLOUD RUN JOB
+# CLOUD RUN JOB (FIXED)
 # =========================
 def launch_cloud_run_job(args: dict):
     token = get_access_token()
@@ -61,7 +61,8 @@ def launch_cloud_run_job(args: dict):
         "overrides": {
             "containerOverrides": [
                 {
-                    "args": [f"{k}={v}" for k, v in args.items()]
+                    # 🔥 job_main.py SIEMPRE PRIMERO
+                    "args": ["job_main.py"] + [f"{k}={v}" for k, v in args.items()]
                 }
             ]
         }
