@@ -1,4 +1,3 @@
-import os
 import uuid
 import requests
 
@@ -24,7 +23,7 @@ BUCKET_NAME = "bucket-aux-ia-modelo-seguimiento-talleres"
 
 
 # =========================
-# AUTH (Cloud Run native)
+# AUTH
 # =========================
 def get_access_token():
     credentials, _ = default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
@@ -43,11 +42,16 @@ def upload_csv_to_gcs(file_bytes: bytes, request_id: str) -> str:
     blob = bucket.blob(blob_path)
     blob.upload_from_string(file_bytes, content_type="text/csv")
 
-    return f"gs://{BUCKET_NAME}/{blob_path}"
+    gcs_path = f"gs://{BUCKET_NAME}/{blob_path}"
+
+    # 🔍 LOG CLAVE
+    print(f"📤 CSV subido a GCS: {gcs_path}")
+
+    return gcs_path
 
 
 # =========================
-# CLOUD RUN JOB (FIXED)
+# CLOUD RUN JOB
 # =========================
 def launch_cloud_run_job(args: dict):
     token = get_access_token()
@@ -57,11 +61,16 @@ def launch_cloud_run_job(args: dict):
         f"namespaces/{PROJECT_ID}/jobs/{JOB_NAME}:run"
     )
 
+    # 🔍 LOG CLAVE
+    print("🚀 Lanzando Job con argumentos:")
+    for k, v in args.items():
+        print(f"   - {k} = {v}")
+
     payload = {
         "overrides": {
             "containerOverrides": [
                 {
-                    # 🔥 job_main.py SIEMPRE PRIMERO
+                    # job_main.py SIEMPRE primero
                     "args": ["job_main.py"] + [f"{k}={v}" for k, v in args.items()]
                 }
             ]
@@ -74,8 +83,13 @@ def launch_cloud_run_job(args: dict):
     }
 
     r = requests.post(url, headers=headers, json=payload)
+
     if not r.ok:
+        print("❌ Error al lanzar Job:")
+        print(r.text)
         raise RuntimeError(r.text)
+
+    print("✅ Job lanzado correctamente")
 
 
 # =========================
@@ -106,7 +120,6 @@ async def process_csv(file: UploadFile = File(...)):
         "request_id": request_id
     })
 
-    # 3️⃣ Respuesta inmediata
     return {
         "ok": True,
         "status": "job_started",
