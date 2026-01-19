@@ -6,12 +6,10 @@ from google.cloud import storage
 from google.auth import default
 from google.auth.transport.requests import Request
 
-
 # =========================
 # FASTAPI APP (SERVICE)
 # =========================
 app = FastAPI(title="Observaciones Talleres API", version="1.0.0")
-
 
 # =========================
 # CONFIG
@@ -35,19 +33,23 @@ def get_access_token():
 # GCS
 # =========================
 def upload_csv_to_gcs(file_bytes: bytes, request_id: str) -> str:
+    """
+    Sube el archivo a GCS y devuelve la ruta relativa (blob path)
+    necesaria para la librería de storage client.
+    """
     client = storage.Client()
     bucket = client.bucket(BUCKET_NAME)
 
+    # Ruta relativa dentro del bucket
     blob_path = f"inputs/{request_id}.csv"
+
     blob = bucket.blob(blob_path)
     blob.upload_from_string(file_bytes, content_type="text/csv")
 
-    gcs_path = f"gs://{BUCKET_NAME}/{blob_path}"
+    print(f"📤 CSV subido a GCS (URI): gs://{BUCKET_NAME}/{blob_path}")
 
-    # 🔍 LOG CLAVE
-    print(f"📤 CSV subido a GCS: {gcs_path}")
-
-    return gcs_path
+    # RETORNAMOS LA RUTA RELATIVA (sin gs://)
+    return blob_path
 
 
 # =========================
@@ -61,7 +63,6 @@ def launch_cloud_run_job(args: dict):
         f"namespaces/{PROJECT_ID}/jobs/{JOB_NAME}:run"
     )
 
-    # 🔍 LOG CLAVE
     print("🚀 Lanzando Job con argumentos:")
     for k, v in args.items():
         print(f"   - {k} = {v}")
@@ -70,7 +71,8 @@ def launch_cloud_run_job(args: dict):
         "overrides": {
             "containerOverrides": [
                 {
-                    # job_main.py SIEMPRE primero
+                    # Convertimos el diccionario args en una lista de argumentos "--key=value" o "key=value"
+                    # Asumiendo que job_main.py parsea con formato "key=value"
                     "args": ["job_main.py"] + [f"{k}={v}" for k, v in args.items()]
                 }
             ]
@@ -111,12 +113,13 @@ async def process_csv(file: UploadFile = File(...)):
     request_id = uuid.uuid4().hex
     content = await file.read()
 
-    # 1️⃣ Subir CSV a GCS
-    csv_gcs_path = upload_csv_to_gcs(content, request_id)
+    # 1️⃣ Subir CSV a GCS (Obtenemos ruta relativa)
+    blob_relative_path = upload_csv_to_gcs(content, request_id)
 
     # 2️⃣ Lanzar Job
+    # IMPORTANTE: Usamos la clave "blob" para que coincida con job_main.py
     launch_cloud_run_job({
-        "csv_path": csv_gcs_path,
+        "blob": blob_relative_path,
         "request_id": request_id
     })
 
