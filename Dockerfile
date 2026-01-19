@@ -29,17 +29,6 @@ COPY . .
 EXPOSE 8080
 
 # =========================
-# ENTRYPOINT NEUTRO
-# =========================
-# Permite:
-# - Service → uvicorn
-# - Job → python job_main.py ...
-ENTRYPOINT []
-
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
-
-# =========================
 # CMD por defecto (SERVICE)
 # =========================
-CMD ["-m", "uvicorn", "mainAPI:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "mainAPI:app", "--host", "0.0.0.0", "--port", "8080"]
