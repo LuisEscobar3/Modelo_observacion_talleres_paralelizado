@@ -1,38 +1,27 @@
 import os
-import json
-import time
 import uuid
+import tempfile
 import dotenv
 from functools import lru_cache
-from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from langchain_core.globals import set_debug
 
+from google.auth import default
+from google.auth.transport.requests import Request
+import requests
+
 from services.llm_manager import load_llms
-from Functions.read_csv import read_csv_with_polars
-from Functions.Process_indibitual_observations import procesar_observacion_individual
 
 
 # =========================
-# FASTAPI APP
+# FASTAPI APP (SERVICE)
 # =========================
 app = FastAPI(title="Observaciones Talleres API", version="1.0.0")
 
 
 # =========================
-# DIRECTORIOS (LOCAL / CLOUD RUN)
-# =========================
-BASE_DIR = Path(os.environ.get("WORKDIR", "/tmp/obs_service"))
-UPLOAD_DIR = BASE_DIR / "uploads"
-OUTPUT_DIR = BASE_DIR / "outputs"
-
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-
-# =========================
-# LLM (CACHEADO)
+# LLM (CACHEADO - IGUAL A TU CÓDIGO)
 # =========================
 @lru_cache(maxsize=1)
 def get_gemini():
@@ -48,52 +37,45 @@ def get_gemini():
 
 
 # =========================
-# PIPELINE PRINCIPAL
+# CLOUD RUN JOB CONFIG
 # =========================
-def pipeline_por_ruta(ruta_csv: str) -> dict:
-    df_data = read_csv_with_polars(ruta_csv)
+PROJECT_ID = os.environ["GOOGLE_CLOUD_PROJECT"]
+REGION = os.environ.get("REGION", "europe-west1")
+JOB_NAME = "ia-mv-modelo-observacion-talleres-paralelizado"
 
-    start = time.perf_counter()
-    gemini = get_gemini()
 
-    # 👉 Concurrencia se calcula INTERNAMENTE
-    cpu_count = os.cpu_count() or 2
-    max_workers = max(1, cpu_count - 1)
-    chunksize = max(10, len(df_data) // max_workers)
+def get_access_token():
+    credentials, _ = default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    credentials.refresh(Request())
+    return credentials.token
 
-    resultado_json = procesar_observacion_individual(
-        df_observacion=df_data,
-        prompt_sistema="",
-        cliente_llm=gemini,
-        max_workers=max_workers,
-        chunksize=chunksize,
+
+def launch_cloud_run_job(args: dict):
+    token = get_access_token()
+
+    url = (
+        f"https://{REGION}-run.googleapis.com/apis/run.googleapis.com/v1/"
+        f"namespaces/{PROJECT_ID}/jobs/{JOB_NAME}:run"
     )
 
-    elapsed = time.perf_counter() - start
-
-    return {
-        "resultado_json": resultado_json,
-        "elapsed_seconds": round(elapsed, 2)
+    payload = {
+        "overrides": {
+            "containerOverrides": [
+                {
+                    "args": [f"{k}={v}" for k, v in args.items()]
+                }
+            ]
+        }
     }
 
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
 
-# =========================
-# BACKGROUND TASK
-# =========================
-def process_csv_background(csv_path: str, request_id: str):
-    try:
-        result = pipeline_por_ruta(csv_path)
-
-        out_path = OUTPUT_DIR / f"{request_id}.json"
-        out_path.write_text(
-            json.dumps(result["resultado_json"], ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-        print(f"✅ Procesamiento terminado: {out_path}")
-
-    except Exception as e:
-        print(f"❌ Error en background ({request_id}): {e}")
+    r = requests.post(url, headers=headers, json=payload)
+    if not r.ok:
+        raise RuntimeError(r.text)
 
 
 # =========================
@@ -105,36 +87,28 @@ def health():
 
 
 # =========================
-# PROCESS (ACK INMEDIATO)
+# PROCESS CSV (EL QUE CONSUMES)
 # =========================
 @app.post("/process")
-async def process_csv(
-    file: UploadFile = File(...),
-    background_tasks: BackgroundTasks = None
-):
-    if not file.filename or not file.filename.lower().endswith(".csv"):
+async def process_csv(file: UploadFile = File(...)):
+    if not file.filename.lower().endswith(".csv"):
         raise HTTPException(400, "El archivo debe ser .csv")
 
     request_id = uuid.uuid4().hex
-    safe_name = Path(file.filename).name
-    csv_path = UPLOAD_DIR / f"{request_id}_{safe_name}"
 
-    content = await file.read()
-    if not content:
-        raise HTTPException(400, "CSV vacío")
+    # Guardado temporal SOLO para pasarlo al Job
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+        tmp.write(await file.read())
+        csv_path = tmp.name
 
-    csv_path.write_bytes(content)
+    # 🔥 AQUÍ SE ACTIVA EL JOB
+    launch_cloud_run_job({
+        "csv_path": csv_path,
+        "request_id": request_id
+    })
 
-    # 🚀 SE MANDA A BACKGROUND
-    background_tasks.add_task(
-        process_csv_background,
-        str(csv_path),
-        request_id
-    )
-
-    # ✅ RESPUESTA INMEDIATA
     return {
         "ok": True,
-        "status": "recibido",
+        "status": "job_started",
         "request_id": request_id
     }
