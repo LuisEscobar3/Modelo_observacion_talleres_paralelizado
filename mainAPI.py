@@ -6,41 +6,60 @@ import dotenv
 from functools import lru_cache
 from pathlib import Path
 
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from langchain_core.globals import set_debug
+
 from services.llm_manager import load_llms
 from Functions.read_csv import read_csv_with_polars
 from Functions.Process_indibitual_observations import procesar_observacion_individual
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.concurrency import run_in_threadpool
 
-
+# =========================
+# FASTAPI APP
+# =========================
 app = FastAPI(title="Observaciones Talleres API", version="1.0.0")
 
-# Cloud Run: /tmp es el lugar estándar para archivos temporales
+
+# =========================
+# DIRECTORIOS (LOCAL / CLOUD RUN)
+# =========================
 BASE_DIR = Path(os.environ.get("WORKDIR", "/tmp/obs_service"))
 UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "outputs"
+
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# =========================
+# LLM (CACHEADO)
+# =========================
 @lru_cache(maxsize=1)
 def get_gemini():
     dotenv.load_dotenv()
     set_debug(False)
     os.environ["APP_ENV"] = os.environ.get("APP_ENV", "sbx")
+
     llms = load_llms()
     if "gemini_pro" not in llms:
         raise RuntimeError("No se encontró 'gemini_pro' en load_llms()")
+
     return llms["gemini_pro"]
 
 
-def pipeline_por_ruta(ruta_csv: str, max_workers: int = 0, chunksize: int = 0) -> dict:
+# =========================
+# PIPELINE PRINCIPAL
+# =========================
+def pipeline_por_ruta(ruta_csv: str) -> dict:
     df_data = read_csv_with_polars(ruta_csv)
 
     start = time.perf_counter()
     gemini = get_gemini()
+
+    # 👉 Concurrencia se calcula INTERNAMENTE
+    cpu_count = os.cpu_count() or 2
+    max_workers = max(1, cpu_count - 1)
+    chunksize = max(10, len(df_data) // max_workers)
 
     resultado_json = procesar_observacion_individual(
         df_observacion=df_data,
@@ -51,19 +70,47 @@ def pipeline_por_ruta(ruta_csv: str, max_workers: int = 0, chunksize: int = 0) -
     )
 
     elapsed = time.perf_counter() - start
-    return {"resultado_json": resultado_json, "elapsed_seconds": round(elapsed, 2)}
+
+    return {
+        "resultado_json": resultado_json,
+        "elapsed_seconds": round(elapsed, 2)
+    }
 
 
+# =========================
+# BACKGROUND TASK
+# =========================
+def process_csv_background(csv_path: str, request_id: str):
+    try:
+        result = pipeline_por_ruta(csv_path)
+
+        out_path = OUTPUT_DIR / f"{request_id}.json"
+        out_path.write_text(
+            json.dumps(result["resultado_json"], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        print(f"✅ Procesamiento terminado: {out_path}")
+
+    except Exception as e:
+        print(f"❌ Error en background ({request_id}): {e}")
+
+
+# =========================
+# HEALTH
+# =========================
 @app.get("/health")
 def health():
     return {"ok": True}
 
 
+# =========================
+# PROCESS (ACK INMEDIATO)
+# =========================
 @app.post("/process")
 async def process_csv(
     file: UploadFile = File(...),
-    max_workers: int = 0,
-    chunksize: int = 0
+    background_tasks: BackgroundTasks = None
 ):
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(400, "El archivo debe ser .csv")
@@ -78,23 +125,16 @@ async def process_csv(
 
     csv_path.write_bytes(content)
 
-    try:
-        result = await run_in_threadpool(pipeline_por_ruta, str(csv_path), max_workers, chunksize)
-    except Exception as e:
-        raise HTTPException(500, f"Error procesando: {e}")
+    # 🚀 SE MANDA A BACKGROUND
+    background_tasks.add_task(
+        process_csv_background,
+        str(csv_path),
+        request_id
+    )
 
-    out_path = OUTPUT_DIR / f"{request_id}.json"
-    try:
-        out_path.write_text(
-            json.dumps(result["resultado_json"], ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except Exception as e:
-        raise HTTPException(500, f"Error guardando JSON: {e}")
-
+    # ✅ RESPUESTA INMEDIATA
     return {
         "ok": True,
-        "request_id": request_id,
-        "elapsed_seconds": result["elapsed_seconds"],
-        "total_registros": len(result["resultado_json"].get("registros", []))
+        "status": "recibido",
+        "request_id": request_id
     }
