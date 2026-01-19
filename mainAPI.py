@@ -39,8 +39,8 @@ def get_gemini():
 # =========================
 # CLOUD RUN JOB CONFIG
 # =========================
-PROJECT_ID = os.environ["GOOGLE_CLOUD_PROJECT"]
-REGION = os.environ.get("REGION", "europe-west1")
+PROJECT_ID = "sb-iapatrimoniales-dev"
+REGION = "europe-west1"
 JOB_NAME = "ia-mv-modelo-observacion-talleres-paralelizado"
 
 
