@@ -1,8 +1,8 @@
-import sys
 import os
+import sys
 import time
-import dotenv
-from functools import lru_cache
+import logging
+import tempfile
 from pathlib import Path
 
 from google.cloud import storage
@@ -14,93 +14,91 @@ from Functions.Process_indibitual_observations import procesar_observacion_indiv
 
 
 # =========================
+# LOGGING
+# =========================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+)
+
+
+# =========================
+# GCS CONFIG (BUCKET QUEMADO)
+# =========================
+storage_client = storage.Client()
+
+BUCKET_NAME = os.getenv(
+    "GCS_BUCKET_NAME",
+    "bucket-aux-ia-modelo-seguimiento-talleres"
+)
+
+
+# =========================
 # LLM
 # =========================
-@lru_cache(maxsize=1)
 def get_gemini():
-    dotenv.load_dotenv()
     set_debug(False)
     os.environ["APP_ENV"] = os.environ.get("APP_ENV", "sbx")
 
     llms = load_llms()
     if "gemini_pro" not in llms:
-        raise RuntimeError("No se encontró 'gemini_pro'")
+        raise RuntimeError("No se encontró gemini_pro en load_llms()")
 
     return llms["gemini_pro"]
 
 
 # =========================
-# ARG PARSER
+# DESCARGA CSV (MISMO PATRÓN QUE IMAGEN)
 # =========================
-def get_arg(name: str) -> str:
-    for arg in sys.argv[1:]:
-        if arg.startswith(name + "="):
-            return arg.split("=", 1)[1]
-    raise ValueError(f"Argumento requerido faltante: {name}")
+def descargar_csv_desde_gcs(blob_name: str) -> str:
+    """
+    MISMA lógica que tu función de imagen:
+    1. bucket fijo
+    2. blob(blob_name)
+    3. download_as_bytes()
+    4. escribir en /tmp
+    """
+    logging.info(f"📄 Blob CSV recibido: {blob_name}")
+    logging.info(f"🪣 Bucket usado: {BUCKET_NAME}")
 
+    if not blob_name:
+        raise ValueError("blob_name vacío")
 
-# =========================
-# GCS DOWNLOAD (ULTRA LOGUEADO)
-# =========================
-def download_from_gcs(gcs_path: str) -> str:
-    print(f"🔍 csv_gcs_path recibido: '{gcs_path}'")
-
-    if not gcs_path or not isinstance(gcs_path, str):
-        raise ValueError("csv_gcs_path vacío o inválido")
-
-    gcs_path = gcs_path.strip()
-
-    if not gcs_path.startswith("gs://"):
-        raise ValueError(f"Ruta GCS inválida: {gcs_path}")
-
-    path = gcs_path[len("gs://"):]
-    if "/" not in path:
-        raise ValueError(f"Ruta GCS incompleta: {gcs_path}")
-
-    bucket_name, blob_name = path.split("/", 1)
-
-    print(f"🪣 Bucket parseado: '{bucket_name}'")
-    print(f"📄 Blob parseado: '{blob_name}'")
-
-    client = storage.Client()
-    bucket = client.bucket(bucket_name)
+    bucket = storage_client.bucket(BUCKET_NAME)
     blob = bucket.blob(blob_name)
 
-    local_path = Path("/tmp/input.csv")
-    blob.download_to_filename(local_path)
+    if not blob.exists():
+        logging.error(f"❌ CSV no encontrado en GCS: {blob_name}")
+        raise FileNotFoundError(blob_name)
 
-    print(f"✅ Archivo descargado en {local_path}")
+    # 1️⃣ Descargar a RAM (IGUAL que tu código de imagen)
+    contenido_bytes = blob.download_as_bytes()
+
+    # 2️⃣ Escribir a /tmp (Cloud Run friendly)
+    local_path = Path(tempfile.gettempdir()) / Path(blob_name).name
+    local_path.write_bytes(contenido_bytes)
+
+    logging.info(f"✅ CSV descargado en: {local_path}")
     return str(local_path)
 
 
 # =========================
-# MAIN
+# PIPELINE PRINCIPAL
 # =========================
-def main():
-    print("🚀 Job iniciado")
-    print("🧾 sys.argv recibido:")
-    for arg in sys.argv:
-        print(f"   {arg}")
+def pipeline(csv_local_path: str):
+    logging.info(f"🚀 Iniciando procesamiento CSV: {csv_local_path}")
 
-    csv_gcs_path = get_arg("csv_path")
-    request_id = get_arg("request_id")
-
-    print(f"🆔 request_id = {request_id}")
-    print(f"📥 csv_gcs_path = {csv_gcs_path}")
-
-    csv_path = download_from_gcs(csv_gcs_path)
-
-    start = time.perf_counter()
-
-    df_data = read_csv_with_polars(csv_path)
-    print(f"📊 Registros leídos: {len(df_data)}")
+    df_data = read_csv_with_polars(csv_local_path)
 
     gemini = get_gemini()
-    print("🤖 Gemini cargado")
 
     cpu_count = os.cpu_count() or 2
-    max_workers = min(4, max(1, cpu_count - 1))
-    chunksize = max(50, len(df_data) // max_workers)
+    max_workers = max(1, cpu_count - 1)
+    chunksize = max(10, len(df_data) // max_workers)
+
+    logging.info(
+        f"⚙️ CPU={cpu_count} | workers={max_workers} | chunksize={chunksize}"
+    )
 
     procesar_observacion_individual(
         df_observacion=df_data,
@@ -110,14 +108,33 @@ def main():
         chunksize=chunksize,
     )
 
-    elapsed = round(time.perf_counter() - start, 2)
-    print(f"✅ Job finalizado en {elapsed} segundos")
+    logging.info("🏁 Procesamiento finalizado correctamente")
+
+
+# =========================
+# MAIN (ENTRYPOINT DEL JOB)
+# =========================
+def main():
+    """
+    Espera argumentos:
+      blob=inputs/xxxx.csv
+      request_id=xxxx
+    """
+    args = dict(arg.split("=", 1) for arg in sys.argv[1:] if "=" in arg)
+
+    blob_name = args.get("blob")
+    request_id = args.get("request_id")
+
+    logging.info(f"🆔 request_id: {request_id}")
+    logging.info(f"📎 blob recibido: {blob_name}")
+
+    if not blob_name:
+        raise RuntimeError("Falta argumento blob")
+
+    csv_local_path = descargar_csv_desde_gcs(blob_name)
+
+    pipeline(csv_local_path)
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print("❌ ERROR FATAL EN EL JOB")
-        print(e)
-        sys.exit(1)
+    main()
