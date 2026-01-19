@@ -34,7 +34,10 @@ EXPOSE 8080
 # Permite:
 # - Service → uvicorn
 # - Job → python job_main.py ...
-ENTRYPOINT ["python"]
+ENTRYPOINT []
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
 # =========================
 # CMD por defecto (SERVICE)
