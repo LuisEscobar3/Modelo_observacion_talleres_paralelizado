@@ -1,17 +1,11 @@
 import os
 import uuid
-import tempfile
-import dotenv
-from functools import lru_cache
-
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from langchain_core.globals import set_debug
-
-from google.auth import default
-from google.auth.transport.requests import Request
 import requests
 
-from services.llm_manager import load_llms
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from google.cloud import storage
+from google.auth import default
+from google.auth.transport.requests import Request
 
 
 # =========================
@@ -21,35 +15,40 @@ app = FastAPI(title="Observaciones Talleres API", version="1.0.0")
 
 
 # =========================
-# LLM (CACHEADO - IGUAL A TU CÓDIGO)
-# =========================
-@lru_cache(maxsize=1)
-def get_gemini():
-    dotenv.load_dotenv()
-    set_debug(False)
-    os.environ["APP_ENV"] = os.environ.get("APP_ENV", "sbx")
-
-    llms = load_llms()
-    if "gemini_pro" not in llms:
-        raise RuntimeError("No se encontró 'gemini_pro' en load_llms()")
-
-    return llms["gemini_pro"]
-
-
-# =========================
-# CLOUD RUN JOB CONFIG
+# CONFIG
 # =========================
 PROJECT_ID = "sb-iapatrimoniales-dev"
 REGION = "europe-west1"
 JOB_NAME = "ia-mv-modelo-observacion-talleres-paralelizado"
+BUCKET_NAME = "bucket-aux-ia-modelo-seguimiento-talleres"
 
 
+# =========================
+# AUTH (Cloud Run native)
+# =========================
 def get_access_token():
     credentials, _ = default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
     credentials.refresh(Request())
     return credentials.token
 
 
+# =========================
+# GCS
+# =========================
+def upload_csv_to_gcs(file_bytes: bytes, request_id: str) -> str:
+    client = storage.Client()
+    bucket = client.bucket(BUCKET_NAME)
+
+    blob_path = f"inputs/{request_id}.csv"
+    blob = bucket.blob(blob_path)
+    blob.upload_from_string(file_bytes, content_type="text/csv")
+
+    return f"gs://{BUCKET_NAME}/{blob_path}"
+
+
+# =========================
+# CLOUD RUN JOB
+# =========================
 def launch_cloud_run_job(args: dict):
     token = get_access_token()
 
@@ -87,7 +86,7 @@ def health():
 
 
 # =========================
-# PROCESS CSV (EL QUE CONSUMES)
+# PROCESS CSV
 # =========================
 @app.post("/process")
 async def process_csv(file: UploadFile = File(...)):
@@ -95,18 +94,18 @@ async def process_csv(file: UploadFile = File(...)):
         raise HTTPException(400, "El archivo debe ser .csv")
 
     request_id = uuid.uuid4().hex
+    content = await file.read()
 
-    # Guardado temporal SOLO para pasarlo al Job
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
-        tmp.write(await file.read())
-        csv_path = tmp.name
+    # 1️⃣ Subir CSV a GCS
+    csv_gcs_path = upload_csv_to_gcs(content, request_id)
 
-    # 🔥 AQUÍ SE ACTIVA EL JOB
+    # 2️⃣ Lanzar Job
     launch_cloud_run_job({
-        "csv_path": csv_path,
+        "csv_path": csv_gcs_path,
         "request_id": request_id
     })
 
+    # 3️⃣ Respuesta inmediata
     return {
         "ok": True,
         "status": "job_started",
