@@ -3,150 +3,131 @@ import sys
 import time
 import logging
 import tempfile
+import math  # <--- CRITICO: Necesario para la división matemática
 from pathlib import Path
 
 from google.cloud import storage
 from langchain_core.globals import set_debug
 
-# Asegúrate de que estos módulos existan en tu estructura de carpetas
+# TUS MODULOS (Asegúrate que estén en la imagen Docker)
 from services.llm_manager import load_llms
 from Functions.read_csv import read_csv_with_polars
 from Functions.Process_indibitual_observations import procesar_observacion_individual
 
 # =========================
-# LOGGING
+# CONFIGURACIÓN
 # =========================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
-# =========================
-# GCS CONFIG
-# =========================
 storage_client = storage.Client()
-
-# Asegúrate de que este nombre sea correcto y no tenga espacios extra
 BUCKET_NAME = "bucket-aux-ia-modelo-seguimiento-talleres"
 
 
 # =========================
-# LLM
+# HELPERS
 # =========================
 def get_gemini():
     set_debug(False)
     os.environ["APP_ENV"] = os.environ.get("APP_ENV", "sbx")
-
     llms = load_llms()
-    # Validación extra por seguridad
     if "gemini_pro" not in llms:
-        raise RuntimeError("❌ No se encontró 'gemini_pro' en la configuración de load_llms()")
-
+        raise RuntimeError("❌ Error: 'gemini_pro' no encontrado en load_llms()")
     return llms["gemini_pro"]
 
 
-# =========================
-# DESCARGA CSV
-# =========================
 def descargar_csv_desde_gcs(blob_name: str) -> str:
-    """
-    Descarga el blob especificado desde el bucket configurado a la carpeta temporal.
-    """
-    logging.info(f"📄 Blob CSV solicitado: {blob_name}")
+    logging.info(f"⬇️ Descargando Blob: {blob_name}")
+    if not BUCKET_NAME: raise ValueError("❌ BUCKET_NAME vacío")
 
-    # --- VALIDACIÓN CRÍTICA PARA EVITAR IndexError ---
-    if not BUCKET_NAME:
-        raise ValueError("❌ Error Crítico: La variable BUCKET_NAME está vacía.")
+    bucket = storage_client.bucket(BUCKET_NAME)
+    blob = bucket.blob(blob_name)
+    if not blob.exists(): raise FileNotFoundError(f"No existe: {blob_name}")
 
-    logging.info(f"🪣 Usando Bucket: '{BUCKET_NAME}'")
-
-    if not blob_name:
-        raise ValueError("❌ El argumento blob_name está vacío.")
-
-    try:
-        bucket = storage_client.bucket(BUCKET_NAME)
-        blob = bucket.blob(blob_name)
-
-        if not blob.exists():
-            logging.error(f"❌ El archivo no existe en GCS: gs://{BUCKET_NAME}/{blob_name}")
-            raise FileNotFoundError(f"Blob no encontrado: {blob_name}")
-
-        # 1️⃣ Descargar a RAM
-        contenido_bytes = blob.download_as_bytes()
-
-        # 2️⃣ Escribir a /tmp (Compatible con Cloud Run)
-        local_path = Path(tempfile.gettempdir()) / Path(blob_name).name
-        local_path.write_bytes(contenido_bytes)
-
-        logging.info(f"✅ CSV descargado exitosamente en: {local_path}")
-        return str(local_path)
-
-    except Exception as e:
-        logging.error(f"💥 Error descargando desde GCS: {e}")
-        raise e
+    local_path = Path(tempfile.gettempdir()) / Path(blob_name).name
+    blob.download_to_filename(str(local_path))
+    logging.info(f"✅ Descargado en: {local_path}")
+    return str(local_path)
 
 
 # =========================
-# PIPELINE PRINCIPAL
+# PIPELINE (CORE LOGIC)
 # =========================
 def pipeline(csv_local_path: str):
-    logging.info(f"🚀 Iniciando procesamiento del archivo local: {csv_local_path}")
+    logging.info(f"🚀 Iniciando Pipeline: {csv_local_path}")
 
-    # Lectura del CSV
+    # 1. LEER CSV (Polars es eficiente)
     df_data = read_csv_with_polars(csv_local_path)
-
     if df_data.is_empty():
-        logging.warning("⚠️ El CSV descargado está vacío. Finalizando pipeline.")
+        logging.warning("⚠️ CSV vacío. Terminando.")
         return
 
-    # Carga del modelo
-    gemini = get_gemini()
+    # 2. SHARDING (DIVISIÓN DE DATOS)
+    # Obtenemos el índice de esta máquina (0, 1, 2... 9)
+    try:
+        task_index = int(os.environ.get("CLOUD_RUN_TASK_INDEX", 0))
+        task_count = int(os.environ.get("CLOUD_RUN_TASK_COUNT", 1))
+    except ValueError:
+        task_index = 0;
+        task_count = 1
 
-    # Configuración de concurrencia
-    cpu_count = os.cpu_count() or 2
-    max_workers = max(1, cpu_count - 1)
-    chunksize = max(10, len(df_data) // max_workers)
+    total_rows = len(df_data)
+
+    # Calculamos el tamaño exacto del pedazo
+    chunk_size_per_task = math.ceil(total_rows / task_count)
+
+    # Definimos INICIO y FIN para ESTA máquina
+    start_idx = task_index * chunk_size_per_task
+    end_idx = start_idx + chunk_size_per_task
+
+    # CORTAMOS EL DATAFRAME (Slicing)
+    # Esto asegura que ninguna máquina toque los datos de otra
+    df_sharded = df_data[start_idx: min(end_idx, total_rows)]
 
     logging.info(
-        f"⚙️ Configuración: CPU={cpu_count} | Workers={max_workers} | Chunksize={chunksize}"
-    )
+        f"🔢 TAREA {task_index + 1}/{task_count} | Rango: {start_idx} a {end_idx} | Total filas: {len(df_sharded)}")
 
-    # Procesamiento
+    if df_sharded.is_empty():
+        logging.warning("⚠️ Worker sin filas asignadas. Finalizando.")
+        return
+
+    # 3. CONFIGURACIÓN DE WORKERS (HILOS)
+    # Estrategia: 4 CPUs Físicos + Latencia de BD alta = 16 Hilos.
+    # Esto mantiene ocupada la máquina mientras espera respuesta de la BD.
+    max_workers = 16
+
+    # Chunksize interno para los hilos
+    chunksize = max(5, len(df_sharded) // (max_workers * 2))
+
+    logging.info(f"🔥 PROCESANDO: 4 CPUs | {max_workers} Hilos Simultáneos | Chunksize={chunksize}")
+
+    gemini = get_gemini()
+
+    # 4. EJECUCIÓN
     procesar_observacion_individual(
-        df_observacion=df_data,
-        prompt_sistema="",  # Asegúrate de definir esto si es necesario
+        df_observacion=df_sharded,  # <-- Pasamos solo el pedazo recortado
+        prompt_sistema="",
         cliente_llm=gemini,
         max_workers=max_workers,
         chunksize=chunksize,
     )
 
-    logging.info("🏁 Procesamiento finalizado correctamente")
+    logging.info(f"🏁 Tarea {task_index} completada con éxito.")
 
 
 # =========================
-# MAIN (ENTRYPOINT)
+# MAIN
 # =========================
 def main():
-    """
-    Punto de entrada.
-    Espera argumentos tipo: blob=inputs/archivo.csv request_id=12345
-    """
-    # Parseo simple de argumentos clave=valor
+    # Parseo de argumentos key=value
     args = dict(arg.split("=", 1) for arg in sys.argv[1:] if "=" in arg)
-
     blob_name = args.get("blob")
     request_id = args.get("request_id", "N/A")
 
-    logging.info("========================================")
     logging.info(f"🆔 Request ID: {request_id}")
-    logging.info(f"📎 Blob recibido: {blob_name}")
-    logging.info("========================================")
 
     if not blob_name:
-        logging.error("❌ Falta el argumento 'blob'. Uso: python job_main.py blob=ruta/archivo.csv")
-        raise RuntimeError("Falta argumento blob")
+        raise RuntimeError("Falta argumento 'blob'")
 
-    # Ejecución
     csv_local_path = descargar_csv_desde_gcs(blob_name)
     pipeline(csv_local_path)
 
